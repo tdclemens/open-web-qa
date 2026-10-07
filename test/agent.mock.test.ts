@@ -5,7 +5,7 @@ import { createMockAgent, slugify } from "../src/agent/mock";
 /**
  * A 2-section plan that exercises:
  *  - every mock-grammar action type (goto, click, fill, press,
- *    waitForSelector, wait, screenshot, assertUrl, assertText)
+ *    waitForSelector, wait, screenshot, assertUrl, assertText, evaluate)
  *  - a fill value containing spaces ("jane does@example.com")
  *  - an assertText value containing spaces ("Welcome back Jane")
  *  - depends parsing
@@ -131,6 +131,22 @@ describe("createMockAgent", () => {
     );
     await expect(agent.run("## a\n- wait\n")).rejects.toThrow(/missing its argument/);
     await expect(agent.run("## a\n- depends\n")).rejects.toThrow(/missing a comma-separated list/);
+  });
+
+  it("parses evaluate bullets (expression = rest of line, may contain spaces) and rejects a bare '- evaluate'", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      [
+        "## evaluate checks",
+        "- evaluate 1 + 1",
+        "- evaluate document.title",
+      ].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([
+      { type: "evaluate", expression: "1 + 1" },
+      { type: "evaluate", expression: "document.title" },
+    ]);
+    await expect(agent.run("## a\n- evaluate\n")).rejects.toThrow(/missing its argument/);
   });
 
   it("throws when wait <ms> is not a non-negative number", async () => {

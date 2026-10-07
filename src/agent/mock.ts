@@ -24,6 +24,7 @@ import type { Action, TestCase, TestPlanGraph } from "../graph/types";
  *       - screenshot
  *       - assertUrl <url>
  *       - assertText <selector> <text>   (text = rest of the line; may contain spaces)
+ *       - evaluate <expression>          (expression = rest of the line; may contain spaces)
  *       - depends <id1>, <id2>, ...      (populates the case's dependsOn)
  *   - Everything else (prose, non-"- " lines, unknown bullet keywords,
  *     bullets before the first heading) is ignored.
@@ -150,6 +151,10 @@ function parseSection(lines: string[], section: string): { actions: Action[]; de
       case "assertText": {
         const { first, rest: text } = splitFirst(rest, "assertText", section);
         actions.push({ type: "assertText", selector: first, text });
+        break;
+      }
+      case "evaluate": {
+        actions.push({ type: "evaluate", expression: requireRest(rest, "evaluate", section) });
         break;
       }
       default:
