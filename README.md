@@ -7,7 +7,7 @@ headless Playwright** — running cases in series/parallel according to their de
 
 ```
 plan.md ──► AI agent ──► TestPlanGraph (DAG) ──► validate ──► levels ──► Playwright run ──► report
-              (JSON)        (cases + dependsOn)   (cycles, bad refs)   (topological)  (headless Chromium)
+           (JSON Plan)   (cases + dependsOn)              (topological)  (headless Chromium)
 ```
 
 ## Requirements
