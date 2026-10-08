@@ -9,6 +9,8 @@ import { Command, InvalidArgumentError } from "commander";
 import { createMockAgent } from "./agent/mock";
 import { createOpenAiAgent } from "./agent/openai";
 import { createDeepAgent, DEFAULT_IGNORE_LIST } from "./agent/deep";
+import { ConfigError, buildLoginNote, loadConfig, resolveAiOptions } from "./config";
+import type { LoadedConfig } from "./config";
 import { validateGraph } from "./graph/validate";
 import { computeLevels } from "./graph/topo";
 import { runGraph } from "./executor/runner";
@@ -109,6 +111,19 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // 0. Load the config: ./.openwebqa (project) overrides ~/.openwebqa (global),
+  //    merged field by field. A malformed config is a usage error (exit 2).
+  let loaded: LoadedConfig;
+  try {
+    loaded = loadConfig();
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(`openwebqa: ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
+
   // 1. Read the plan file (missing/unreadable -> error, exit 2).
   let markdown: string;
   try {
@@ -120,12 +135,30 @@ async function main(): Promise<void> {
   }
 
   // 2. Compile the plan into a test-case DAG with the chosen agent.
-  //    --ai-endpoint is passed as baseUrl (precedence over env OPENAI_BASE_URL);
-  //    --api-key is passed as apiKey (env OPENAI_API_KEY fallback handled by the agent).
+  //    Effective AI options: CLI flag > env (OPENAI_BASE_URL / OPENAI_API_KEY)
+  //    > ./.openwebqa > ~/.openwebqa (see src/config.ts); the env fallbacks
+  //    and the "not-needed" default are handled by the agent itself.
   //    --no-blind upgrades the OpenAI agent to the "deep" agent, which may
   //    explore the current directory (list_dir/read_file, sandboxed by the
   //    ignore list) while it is coming up with the DAG plan.
-  const openAiOptions = { model: opts.model, apiKey: opts.apiKey, baseUrl: opts.aiEndpoint };
+  const ai = resolveAiOptions(loaded.config, process.env, {
+    model: opts.model,
+    aiEndpoint: opts.aiEndpoint,
+    apiKey: opts.apiKey,
+  });
+  const openAiOptions = { model: ai.model, apiKey: ai.apiKey, baseUrl: ai.baseUrl };
+
+  // Default login credentials (when configured) are automatically passed to
+  // the agent during planning by appending a short note to the plan markdown.
+  // The credentials themselves are never printed to the console, and the
+  // offline mock agent never receives them.
+  const loginNote = opts.agent === "openai" ? buildLoginNote(loaded.config.login) : null;
+  if (loginNote !== null) {
+    console.log(
+      "openwebqa: default login credentials configured; passing them to the agent during planning",
+    );
+  }
+
   const agent =
     opts.agent === "mock"
       ? createMockAgent()
@@ -137,7 +170,7 @@ async function main(): Promise<void> {
       `openwebqa: exploration enabled (root: ${process.cwd()}, ignore: ${DEFAULT_IGNORE_LIST.join(", ")})`,
     );
   }
-  const graph: TestPlanGraph = await agent.run(markdown);
+  const graph: TestPlanGraph = await agent.run(loginNote !== null ? markdown + loginNote : markdown);
 
   // 3. Validate the graph (includes circular-dependency detection).
   const errors = validateGraph(graph);

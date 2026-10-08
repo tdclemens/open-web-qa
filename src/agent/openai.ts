@@ -16,6 +16,11 @@ import type { Action, ActionType, TestCase, TestPlanGraph } from "../graph/types
  *
  * Both agents run on the OpenAI Agents SDK (@openai/agents): a single-turn
  * Agent here, and a tool-calling Agent for the deep agent (see ./deep.ts).
+ *
+ * Connection options normally arrive pre-resolved by the CLI, which layers
+ * config files (./.openwebqa overriding ~/.openwebqa, see ../config.ts) and
+ * the environment under the command-line flags; the fallbacks in
+ * {@link createChatModel} cover direct/programmatic use.
  * Tracing is disabled on the shared runner so plan text and explored file
  * contents are never sent to the OpenAI tracing endpoint. Model output is
  * plain text (no response_format): the system prompt mandates a bare JSON
@@ -31,7 +36,8 @@ export interface OpenAiAgentOptions {
   model?: string;
   /**
    * API key. Precedence: explicit option > process.env.OPENAI_API_KEY >
-   * "not-needed" (so keyless local endpoints work).
+   * "not-needed" (so keyless local endpoints work). The CLI resolves the
+   * .openwebqa config files (../config.ts) into this option before calling.
    */
   apiKey?: string;
   /**
