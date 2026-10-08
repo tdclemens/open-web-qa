@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import OpenAI from "openai";
+import { Agent, MaxTurnsExceededError, tool } from "@openai/agents";
 import type { TestPlanGraph } from "../graph/types";
-import { buildSystemPrompt, extractJson } from "./openai";
+import {
+  buildSystemPrompt,
+  createChatModel,
+  extractJson,
+  runAgentRequest,
+  sharedRunner,
+} from "./openai";
 import type { OpenAiAgent, OpenAiAgentOptions } from "./openai";
 
 /**
@@ -23,6 +29,12 @@ import type { OpenAiAgent, OpenAiAgentOptions } from "./openai";
  *     should not be exposed (`.env`, `.git`, ...) are never shown to the
  *     model.
  *
+ * The tool loop is driven by the Agents SDK runner: the model is offered the
+ * two tools, tool argument errors (including invalid JSON arguments) are
+ * returned to the model as `role: "tool"` messages so it can self-correct,
+ * and execution stops with a clear error once the model keeps requesting
+ * tools beyond `maxToolTurns` rounds (default 10) without emitting JSON
+ * (checked before the request that would exceed the cap is sent).
  * The endpoint must support OpenAI-style function calling (OpenAI, Ollama,
  * LM Studio, ...). The final message is parsed with the same `extractJson`
  * used by the plain OpenAI agent, so the returned TestPlanGraph shape is
@@ -246,11 +258,14 @@ async function readFile(
   return `${header}\n${text}`;
 }
 
-/** Tool definitions advertised to the model (OpenAI function-calling format). */
-const EXPLORATION_TOOLS: OpenAI.ChatCompletionTool[] = [
-  {
-    type: "function",
-    function: {
+/**
+ * The two sandboxed exploration tools, bound to this run's resolved root.
+ * The SDK parses the model's tool arguments and serializes the returned
+ * string back as a `role: "tool"` message.
+ */
+function createExplorationTools(realRoot: string, rootDir: string, patterns: RegExp[]) {
+  return [
+    tool({
       name: "list_dir",
       description:
         "List the entries of a directory inside the project. Hidden files and other " +
@@ -263,12 +278,13 @@ const EXPLORATION_TOOLS: OpenAI.ChatCompletionTool[] = [
             description: "Directory path relative to the project root (default: \".\")",
           },
         },
+        required: [],
+        additionalProperties: false,
       },
-    },
-  },
-  {
-    type: "function",
-    function: {
+      execute: (input: unknown) =>
+        runExplorationTool("list_dir", input, realRoot, rootDir, patterns),
+    }),
+    tool({
       name: "read_file",
       description:
         "Read a text file inside the project (only the first 64 KB are shown; binary " +
@@ -279,10 +295,13 @@ const EXPLORATION_TOOLS: OpenAI.ChatCompletionTool[] = [
           path: { type: "string", description: "File path relative to the project root" },
         },
         required: ["path"],
+        additionalProperties: false,
       },
-    },
-  },
-];
+      execute: (input: unknown) =>
+        runExplorationTool("read_file", input, realRoot, rootDir, patterns),
+    }),
+  ];
+}
 
 /**
  * Dispatch one model tool call to a sandboxed exploration tool. Never throws
@@ -350,16 +369,10 @@ export function buildDeepSystemPrompt(): string {
  * Key/base-URL precedence is the same as {@link createOpenAiAgent}.
  */
 export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
-  const model = options.model ?? "gpt-4o-mini";
-  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? "not-needed";
-  const baseURL = options.baseUrl ?? process.env.OPENAI_BASE_URL;
-  const client = new OpenAI({
-    apiKey,
-    ...(baseURL ? { baseURL } : {}),
-  });
   const rootDir = path.resolve(options.rootDir);
   const patterns = (options.ignore ?? DEFAULT_IGNORE_LIST).map(compileNamePattern);
   const maxToolTurns = options.maxToolTurns ?? DEFAULT_MAX_TOOL_TURNS;
+  const chatModel = createChatModel(options);
 
   return {
     async run(planMarkdown: string): Promise<TestPlanGraph> {
@@ -371,75 +384,34 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         throw new Error(`deep agent: cannot resolve exploration root "${rootDir}": ${message}`);
       }
 
-      const messages: OpenAI.ChatCompletionMessageParam[] = [
-        { role: "system", content: buildDeepSystemPrompt() },
-        { role: "user", content: planMarkdown },
-      ];
+      const agent = new Agent({
+        name: "openwebqa-plan-compiler-deep",
+        instructions: buildDeepSystemPrompt(),
+        model: chatModel,
+        tools: createExplorationTools(realRoot, rootDir, patterns),
+      });
 
-      let toolTurns = 0;
-      for (;;) {
-        let completion: OpenAI.ChatCompletion;
-        try {
-          completion = await client.chat.completions.create({
-            model,
-            messages,
-            tools: EXPLORATION_TOOLS,
-            response_format: { type: "json_object" },
-          });
-        } catch (err) {
-          throw new Error(
-            `OpenWebQA deep agent request failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        const message = completion.choices[0]?.message;
-        if (!message) {
+      try {
+        const result = await runAgentRequest(
+          () =>
+            sharedRunner.run(agent, planMarkdown, {
+              maxTurns: maxToolTurns,
+              toolNotFoundBehavior: "return_error_to_model",
+            }),
+          "OpenWebQA deep agent",
+        );
+        const content = typeof result.finalOutput === "string" ? result.finalOutput : "";
+        if (!content) {
           throw new TypeError("OpenWebQA deep agent returned an empty response; expected a JSON TestPlanGraph");
         }
-        const toolCalls = message.tool_calls ?? [];
-        if (toolCalls.length === 0) {
-          if (!message.content) {
-            throw new TypeError(
-              "OpenWebQA deep agent returned an empty response; expected a JSON TestPlanGraph",
-            );
-          }
-          return extractJson(message.content);
-        }
-        if (toolTurns >= maxToolTurns) {
+        return extractJson(content);
+      } catch (err) {
+        if (err instanceof MaxTurnsExceededError) {
           throw new Error(
             `deep agent: model requested more than ${maxToolTurns} tool turns without producing the plan JSON`,
           );
         }
-        toolTurns += 1;
-        messages.push({ role: "assistant", content: message.content, tool_calls: toolCalls });
-        for (const call of toolCalls) {
-          if (call.type !== "function") {
-            messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: `error: unsupported tool call type "${call.type}"`,
-            });
-            continue;
-          }
-          let parsedArgs: unknown;
-          try {
-            parsedArgs = call.function.arguments === "" ? {} : JSON.parse(call.function.arguments);
-          } catch {
-            messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: `error: tool arguments for "${call.function.name}" are not valid JSON`,
-            });
-            continue;
-          }
-          const result = await runExplorationTool(
-            call.function.name,
-            parsedArgs,
-            realRoot,
-            rootDir,
-            patterns,
-          );
-          messages.push({ role: "tool", tool_call_id: call.id, content: result });
-        }
+        throw err;
       }
     },
   };

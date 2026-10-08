@@ -12,7 +12,7 @@ plan.md ──► AI agent ──► TestPlanGraph (DAG) ──► validate ─�
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 22
 
 ## Install
 

@@ -160,7 +160,10 @@ describe("createOpenAiAgent with a custom OpenAI-compatible endpoint", () => {
     expect(captured.request?.path).toBe("/v1/chat/completions");
     expect(captured.request?.authorization).toBe("Bearer test");
     expect(captured.request?.body.model).toBe("gpt-4o-mini");
-    expect(captured.request?.body.response_format).toEqual({ type: "json_object" });
+    // The Agents SDK sends plain text output (no response_format) so that
+    // arbitrary OpenAI-compatible endpoints keep working; extractJson
+    // tolerates prose or code fences around the JSON object.
+    expect(captured.request?.body.response_format).toBeUndefined();
     const messages = captured.request?.body.messages as Array<{ role: string; content: string }>;
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("JSON");

@@ -142,7 +142,8 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
     expect(firstMessages.map((m) => m.role)).toEqual(["system", "user"]);
     const tools = first.tools as Array<{ type: string; function: { name: string } }>;
     expect(tools.map((t) => t.function.name).sort()).toEqual(["list_dir", "read_file"]);
-    expect(first.response_format).toEqual({ type: "json_object" });
+    // Plain text output: no response_format on the wire (see openai.ts).
+    expect(first.response_format).toBeUndefined();
 
     // Second request: assistant tool_calls message + one tool result per call.
     const secondMessages = server.requests[1].messages as Array<{
@@ -250,8 +251,9 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
       maxToolTurns: 2,
     });
     await expect(agent.run("# endless plan")).rejects.toThrow(/more than 2 tool turns/);
-    // 2 allowed tool rounds + 1 request whose tool calls are refused.
-    expect(server.requests).toHaveLength(3);
+    // The SDK's maxTurns cap is checked before the request that would exceed
+    // it, so exactly two tool rounds are executed.
+    expect(server.requests).toHaveLength(2);
   });
 
   it("honors a custom ignore list via the ignore option", async () => {

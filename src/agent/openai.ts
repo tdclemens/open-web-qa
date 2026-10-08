@@ -1,4 +1,10 @@
 import OpenAI from "openai";
+import {
+  Agent,
+  MaxTurnsExceededError,
+  OpenAIChatCompletionsModel,
+  Runner,
+} from "@openai/agents";
 import type { Action, ActionType, TestCase, TestPlanGraph } from "../graph/types";
 
 /**
@@ -7,6 +13,16 @@ import type { Action, ActionType, TestCase, TestPlanGraph } from "../graph/types
  * Submits a markdown QA test plan to an OpenAI-compatible chat model (the
  * official OpenAI API, or any local/home-network server such as Ollama or
  * LM Studio) and returns the parsed TestPlanGraph.
+ *
+ * Both agents run on the OpenAI Agents SDK (@openai/agents): a single-turn
+ * Agent here, and a tool-calling Agent for the deep agent (see ./deep.ts).
+ * Tracing is disabled on the shared runner so plan text and explored file
+ * contents are never sent to the OpenAI tracing endpoint. Model output is
+ * plain text (no response_format): the system prompt mandates a bare JSON
+ * object and {@link extractJson} tolerates prose or code fences around it,
+ * which keeps arbitrary OpenAI-compatible endpoints working (the strict
+ * json_schema mode the SDK requests for schema-typed outputs is not
+ * supported by all of them).
  */
 
 /** Options for {@link createOpenAiAgent}. */
@@ -233,7 +249,7 @@ export function extractJson(text: string): TestPlanGraph {
 }
 
 /**
- * Create an AI agent backed by an OpenAI-compatible chat-completions endpoint.
+ * OpenAI-compatible chat model instance for the given options.
  *
  * Key/base-URL precedence:
  *   apiKey  = options.apiKey ?? process.env.OPENAI_API_KEY ?? "not-needed"
@@ -241,7 +257,7 @@ export function extractJson(text: string): TestPlanGraph {
  * When baseURL is unset the option is omitted entirely so the openai SDK
  * default (https://api.openai.com/v1) applies.
  */
-export function createOpenAiAgent(options: OpenAiAgentOptions = {}): OpenAiAgent {
+export function createChatModel(options: OpenAiAgentOptions = {}): OpenAIChatCompletionsModel {
   const model = options.model ?? "gpt-4o-mini";
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? "not-needed";
   const baseURL = options.baseUrl ?? process.env.OPENAI_BASE_URL;
@@ -249,25 +265,56 @@ export function createOpenAiAgent(options: OpenAiAgentOptions = {}): OpenAiAgent
     apiKey,
     ...(baseURL ? { baseURL } : {}),
   });
+  return new OpenAIChatCompletionsModel(client, model);
+}
+
+/**
+ * Shared SDK runner with tracing disabled: plan text and deep-agent tool
+ * results may contain project source, and local/home-network endpoints are a
+ * first-class use case, so nothing is ever exported to the OpenAI tracing
+ * endpoint (an ambient OPENAI_API_KEY in the environment must not change
+ * that).
+ */
+export const sharedRunner = new Runner({ tracingDisabled: true });
+
+/**
+ * Run one SDK agent request, translating unexpected failures into a stable
+ * "<label> request failed: ..." Error. MaxTurnsExceededError passes through
+ * untouched so callers that cap tool turns can react to the cap separately.
+ */
+export async function runAgentRequest<T>(
+  request: () => Promise<T>,
+  requestLabel: string,
+): Promise<T> {
+  try {
+    return await request();
+  } catch (err) {
+    if (err instanceof MaxTurnsExceededError) {
+      throw err;
+    }
+    throw new Error(
+      `${requestLabel} request failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Create an AI agent backed by an OpenAI-compatible chat-completions endpoint.
+ */
+export function createOpenAiAgent(options: OpenAiAgentOptions = {}): OpenAiAgent {
+  const agent = new Agent({
+    name: "openwebqa-plan-compiler",
+    instructions: buildSystemPrompt(),
+    model: createChatModel(options),
+  });
 
   return {
     async run(planMarkdown: string): Promise<TestPlanGraph> {
-      let completion;
-      try {
-        completion = await client.chat.completions.create({
-          model,
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            { role: "user", content: planMarkdown },
-          ],
-          response_format: { type: "json_object" },
-        });
-      } catch (err) {
-        throw new Error(
-          `OpenWebQA agent request failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      const content = completion.choices[0]?.message?.content ?? null;
+      const result = await runAgentRequest(
+        () => sharedRunner.run(agent, planMarkdown, {}),
+        "OpenWebQA agent",
+      );
+      const content = typeof result.finalOutput === "string" ? result.finalOutput : "";
       if (!content) {
         throw new TypeError("OpenWebQA agent returned an empty response; expected a JSON TestPlanGraph");
       }
