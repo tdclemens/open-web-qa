@@ -18,9 +18,9 @@ import type { Action, ActionType, TestCase, TestPlanGraph } from "../graph/types
  * Agent here, and a tool-calling Agent for the deep agent (see ./deep.ts).
  *
  * Connection options normally arrive pre-resolved by the CLI, which layers
- * config files (./.openwebqa overriding ~/.openwebqa, see ../config.ts) and
- * the environment under the command-line flags; the fallbacks in
- * {@link createChatModel} cover direct/programmatic use.
+ * the .openwebqa config directories (./.openwebqa/ overriding ~/.openwebqa/,
+ * see ../config.ts) and the environment under the command-line flags; the
+ * fallbacks in {@link createChatModel} cover direct/programmatic use.
  * Tracing is disabled on the shared runner so plan text and explored file
  * contents are never sent to the OpenAI tracing endpoint. Model output is
  * plain text (no response_format): the system prompt mandates a bare JSON
@@ -37,7 +37,8 @@ export interface OpenAiAgentOptions {
   /**
    * API key. Precedence: explicit option > process.env.OPENAI_API_KEY >
    * "not-needed" (so keyless local endpoints work). The CLI resolves the
-   * .openwebqa config files (../config.ts) into this option before calling.
+   * .openwebqa config directories (../config.ts) into this option before
+   * calling.
    */
   apiKey?: string;
   /**
@@ -96,6 +97,7 @@ export function buildSystemPrompt(): string {
     '- "dependsOn" entries must reference ids of other cases in "cases".',
     "- Do not create circular dependencies.",
     "- Order actions within each case in the sequence they must execute.",
+    "- If the plan context lists configured login credentials, reference the matching credential in fill actions with the value placeholders {{credential:<id>.username}} and {{credential:<id>.password}}; never invent or hard-code credential values.",
     "",
     "Output only the JSON object.",
   ].join("\n");

@@ -9,8 +9,15 @@ import { Command, InvalidArgumentError } from "commander";
 import { createMockAgent } from "./agent/mock";
 import { createOpenAiAgent } from "./agent/openai";
 import { createDeepAgent, DEFAULT_IGNORE_LIST } from "./agent/deep";
-import { ConfigError, buildLoginNote, loadConfig, resolveAiOptions } from "./config";
-import type { LoadedConfig } from "./config";
+import {
+  ConfigError,
+  buildCredentialsNote,
+  loadConfig,
+  loadCredentials,
+  resolveAiOptions,
+  resolveCredentialPlaceholders,
+} from "./config";
+import type { LoadedConfig, LoadedCredentials } from "./config";
 import { validateGraph } from "./graph/validate";
 import { computeLevels } from "./graph/topo";
 import { runGraph } from "./executor/runner";
@@ -111,11 +118,14 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // 0. Load the config: ./.openwebqa (project) overrides ~/.openwebqa (global),
-  //    merged field by field. A malformed config is a usage error (exit 2).
+  // 0. Load config + credentials: ./.openwebqa/ (project) overrides
+  //    ~/.openwebqa/ (global); config fields merge per field and credential
+  //    entries per id (project wins). A malformed file is a usage error (2).
   let loaded: LoadedConfig;
+  let loadedCredentials: LoadedCredentials;
   try {
     loaded = loadConfig();
+    loadedCredentials = loadCredentials();
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(`openwebqa: ${err.message}`);
@@ -136,8 +146,9 @@ async function main(): Promise<void> {
 
   // 2. Compile the plan into a test-case DAG with the chosen agent.
   //    Effective AI options: CLI flag > env (OPENAI_BASE_URL / OPENAI_API_KEY)
-  //    > ./.openwebqa > ~/.openwebqa (see src/config.ts); the env fallbacks
-  //    and the "not-needed" default are handled by the agent itself.
+  //    > ./.openwebqa/config.json > ~/.openwebqa/config.json (see src/config.ts);
+  //    the env fallbacks and the "not-needed" default are handled by the
+  //    agent itself.
   //    --no-blind upgrades the OpenAI agent to the "deep" agent, which may
   //    explore the current directory (list_dir/read_file, sandboxed by the
   //    ignore list) while it is coming up with the DAG plan.
@@ -148,14 +159,16 @@ async function main(): Promise<void> {
   });
   const openAiOptions = { model: ai.model, apiKey: ai.apiKey, baseUrl: ai.baseUrl };
 
-  // Default login credentials (when configured) are automatically passed to
-  // the agent during planning by appending a short note to the plan markdown.
-  // The credentials themselves are never printed to the console, and the
-  // offline mock agent never receives them.
-  const loginNote = opts.agent === "openai" ? buildLoginNote(loaded.config.login) : null;
-  if (loginNote !== null) {
+  // Configured login credentials: their ids and descriptions (never the
+  // values) are passed to the agent during planning by appending a short
+  // note to the plan markdown, and the {{credential:<id>.field}} placeholders
+  // in the compiled plan are substituted with the real values just before
+  // execution. The offline mock agent never receives the values either.
+  const credentials = loadedCredentials.credentials;
+  const credentialsNote = opts.agent === "openai" ? buildCredentialsNote(credentials) : null;
+  if (credentialsNote !== null) {
     console.log(
-      "openwebqa: default login credentials configured; passing them to the agent during planning",
+      `openwebqa: ${credentials.length} login credential(s) configured; passing their ids and descriptions to the agent during planning`,
     );
   }
 
@@ -170,13 +183,29 @@ async function main(): Promise<void> {
       `openwebqa: exploration enabled (root: ${process.cwd()}, ignore: ${DEFAULT_IGNORE_LIST.join(", ")})`,
     );
   }
-  const graph: TestPlanGraph = await agent.run(loginNote !== null ? markdown + loginNote : markdown);
+  const graph: TestPlanGraph = await agent.run(
+    credentialsNote !== null ? markdown + credentialsNote : markdown,
+  );
 
   // 3. Validate the graph (includes circular-dependency detection).
   const errors = validateGraph(graph);
   if (errors.length > 0) {
     for (const error of errors) console.error(`openwebqa: ${error}`);
     process.exit(2);
+  }
+
+  // 3b. Substitute {{credential:<id>.username|password}} placeholders in the
+  //     compiled plan with the configured values (in place). An unresolvable
+  //     placeholder is a usage error (exit 2). Runs before --dry-run so a
+  //     dry run also validates the references.
+  try {
+    resolveCredentialPlaceholders(graph, credentials);
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(`openwebqa: ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
   }
 
   // 4. Resolve relative goto URLs: base = --base-url, or 'file://' + the plan

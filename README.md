@@ -74,25 +74,32 @@ Compile and inspect the plan without executing:
 
 ```bash
 openwebqa plan.md --dry-run
-# Level 0: load-home
-# Level 1: enter-email
-# Level 2: submit-form
+# Level 0: load-blog, login, logout, create-blog-post
+# Level 1: read-blog-post
 ```
 
 ## Configuration
 
-OpenWebQA reads a JSON config from two locations. The **project** file
-(`./.openwebqa`, in the directory you run `openwebqa` from) takes precedence
-over the **global** file (`~/.openwebqa`); fields the project file does not set
-fall back to the global file, so both may be present at the same time.
+OpenWebQA reads JSON config from a `.openwebqa` **directory** in two
+locations. The **project** directory (`./.openwebqa/`, in the directory you
+run `openwebqa` from) takes precedence over the **global** directory
+(`~/.openwebqa/`, in your home directory); settings the project files do not
+set fall back to the global files, so both may be present at the same time.
+
+Each directory may hold two files:
+
+| File | Purpose |
+| --- | --- |
+| `config.json` | AI connection settings (the `ai` section) |
+| `credentials.json` | Named login credentials for test plans |
+
+### config.json
 
 | Key | Meaning | Equivalent flag |
 | --- | --- | --- |
 | `ai.model` | Model id for the AI agent | `--model` |
 | `ai.endpoint` | OpenAI-compatible base URL | `--ai-endpoint` |
 | `ai.apiKey` | API key for the endpoint | `--api-key` |
-| `login.username` | Default login username | — (auto-passed to the agent) |
-| `login.password` | Default login password | — (auto-passed to the agent) |
 
 ```json
 {
@@ -100,30 +107,57 @@ fall back to the global file, so both may be present at the same time.
     "model": "llama3",
     "endpoint": "http://127.0.0.1:11434/v1",
     "apiKey": "not-needed"
-  },
-  "login": {
-    "username": "qa@example.com",
-    "password": "s3cret"
   }
 }
 ```
 
 Precedence for every setting: **CLI flag > environment variable
-(`OPENAI_BASE_URL`, `OPENAI_API_KEY`) > `./.openwebqa` > `~/.openwebqa` >
-built-in default**. All values are strings; empty strings are treated as unset.
-Unknown keys, non-string values, or invalid JSON are configuration errors
-(exit code 2) that name the offending file and key. A missing or empty config
-file is fine.
+(`OPENAI_BASE_URL`, `OPENAI_API_KEY`) > `./.openwebqa/config.json` >
+`~/.openwebqa/config.json` > built-in default**. All values are strings; empty
+strings are treated as unset. Unknown keys, non-string values, or invalid JSON
+are configuration errors (exit code 2) that name the offending file and key. A
+missing or empty file is fine.
 
-**Default login credentials**: when `login` is configured, the credentials are
-automatically passed to the AI agent while it compiles the plan, so test cases
-that need to log in can use them without the credentials ever appearing in the
-plan markdown. Credentials are never printed to the console, and the offline
-`--agent mock` never receives them.
+### credentials.json
 
-The repository's `.gitignore` ignores `.openwebqa` by default because it may
-hold an API key and a password. Force-include it with `git add -f` (or a
-negation rule) if you want to commit a keyless project config.
+A JSON array of named login credentials. Each entry has an `id` (referenced
+from plans), a `description` (what the credential is for), and a `username`
+and/or `password`:
+
+```json
+[
+  {
+    "id": "qa",
+    "description": "Regular demo user seeded in the blog app",
+    "username": "qa@example.com",
+    "password": "s3cret"
+  }
+]
+```
+
+When credentials are configured, their **ids and descriptions (never the
+values)** are automatically passed to the AI agent while it compiles the plan,
+so the agent can choose the right one for each login. Test cases reference a
+credential's values with placeholders in `fill` actions (or any string
+action field):
+
+```
+{{credential:<id>.username}}    {{credential:<id>.password}}
+```
+
+The CLI replaces every placeholder with the real value just before execution
+(and before `--dry-run` exits), so the values never appear in the plan
+markdown or on the console, and the offline `--agent mock` never receives them
+— its plans can use the same placeholders, and they are resolved at run time.
+A placeholder that cannot be resolved (unknown id, missing field, malformed
+placeholder, or no credentials configured at all) is a usage error (exit code
+2) that names the offending case and placeholder. Entries with the same `id`
+in the project and global files merge with the project entry winning.
+
+The repository's `.gitignore` ignores `.openwebqa/` by default because it may
+hold an API key and passwords; the sample demo credential under
+`examples/.openwebqa/` is force-included with negation rules. Use `git add -f`
+(or a negation rule) to commit a keyless project config if you want one.
 
 ## Plan-time exploration (`--no-blind`)
 
@@ -163,7 +197,7 @@ With `--agent mock`, the plan uses a fixed grammar:
 ```markdown
 ## Submit form
 - depends enter-email
-- goto demo.html
+- goto http://localhost:4173/
 - fill #email test@example.com
 - click #submit
 - assertText #msg Welcome test@example.com
@@ -171,6 +205,11 @@ With `--agent mock`, the plan uses a fixed grammar:
 
 Actions: `goto`, `click`, `fill`, `press`, `waitForSelector`, `wait`, `screenshot`,
 `assertUrl`, `assertText`, `evaluate` (plus `depends <id1>, <id2>, ...` for dependencies).
+
+The text of a `fill`/`assertText` action may include a
+`{{credential:<id>.username}}` or `{{credential:<id>.password}}` placeholder;
+the CLI substitutes it from `credentials.json` before execution (see
+Configuration).
 
 ## Execution model
 

@@ -17,7 +17,9 @@ import type { Action, TestCase, TestPlanGraph } from "../graph/types";
  *   - Inside a section, "- " bullets are parsed as actions, in order:
  *       - goto <url>
  *       - click <selector>
- *       - fill <selector> <text>         (text = rest of the line; may contain spaces)
+ *       - fill <selector> <text>         (text = rest of the line; may contain spaces;
+ *                                        may be a {{credential:<id>.username|password}}
+ *                                        placeholder that the CLI resolves before execution)
  *       - press <key>
  *       - waitForSelector <selector>
  *       - wait <ms>                      (non-negative number)
