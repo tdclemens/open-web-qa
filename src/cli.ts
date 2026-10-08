@@ -8,6 +8,7 @@ import path from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { createMockAgent } from "./agent/mock";
 import { createOpenAiAgent } from "./agent/openai";
+import { createDeepAgent, DEFAULT_IGNORE_LIST } from "./agent/deep";
 import { validateGraph } from "./graph/validate";
 import { computeLevels } from "./graph/topo";
 import { runGraph } from "./executor/runner";
@@ -56,6 +57,11 @@ program
     30000,
   )
   .option("--headful", "run the browser headful (visible) instead of headless", false)
+  .option(
+    "--no-blind",
+    "let the OpenAI agent explore the current directory (list_dir/read_file) while it compiles the " +
+      "plan; the ignore list keeps hidden files and node_modules out of its reach (requires --agent openai)",
+  )
   .option("--dry-run", "compile, validate, and print the execution levels, then exit without executing", false)
   .option(
     "--base-url <url>",
@@ -73,6 +79,8 @@ interface CliOptions {
   workers: number;
   timeout: number;
   headful: boolean;
+  /** Commander negation flag: true by default, false only when --no-blind is passed. */
+  blind: boolean;
   dryRun: boolean;
   baseUrl?: string;
   resultsDir: string;
@@ -91,6 +99,16 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // --no-blind is a commander negation flag: opts.blind defaults to true and
+  // becomes false only when the user passes --no-blind.
+  const noBlind = opts.blind === false;
+  if (noBlind && opts.agent !== "openai") {
+    console.error(
+      "openwebqa: --no-blind requires --agent openai (the mock agent is offline and cannot explore)",
+    );
+    process.exit(2);
+  }
+
   // 1. Read the plan file (missing/unreadable -> error, exit 2).
   let markdown: string;
   try {
@@ -104,10 +122,21 @@ async function main(): Promise<void> {
   // 2. Compile the plan into a test-case DAG with the chosen agent.
   //    --ai-endpoint is passed as baseUrl (precedence over env OPENAI_BASE_URL);
   //    --api-key is passed as apiKey (env OPENAI_API_KEY fallback handled by the agent).
+  //    --no-blind upgrades the OpenAI agent to the "deep" agent, which may
+  //    explore the current directory (list_dir/read_file, sandboxed by the
+  //    ignore list) while it is coming up with the DAG plan.
+  const openAiOptions = { model: opts.model, apiKey: opts.apiKey, baseUrl: opts.aiEndpoint };
   const agent =
     opts.agent === "mock"
       ? createMockAgent()
-      : createOpenAiAgent({ model: opts.model, apiKey: opts.apiKey, baseUrl: opts.aiEndpoint });
+      : noBlind
+        ? createDeepAgent({ ...openAiOptions, rootDir: process.cwd() })
+        : createOpenAiAgent(openAiOptions);
+  if (noBlind) {
+    console.log(
+      `openwebqa: exploration enabled (root: ${process.cwd()}, ignore: ${DEFAULT_IGNORE_LIST.join(", ")})`,
+    );
+  }
   const graph: TestPlanGraph = await agent.run(markdown);
 
   // 3. Validate the graph (includes circular-dependency detection).

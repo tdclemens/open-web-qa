@@ -45,6 +45,7 @@ openwebqa <plan-file> [options]
 | `--workers <n>` | Max test cases running in parallel (default 4) |
 | `--timeout <ms>` | Default per-case timeout (default 30000) |
 | `--headful` | Run the browser visibly instead of headless |
+| `--no-blind` | Let the agent explore the current directory (`list_dir`/`read_file`) while it compiles the plan. An ignore list keeps hidden files and `node_modules` out of its reach. Requires `--agent openai`. |
 | `--dry-run` | Compile + validate + print execution levels, then exit without executing |
 | `--base-url <url>` | Base for resolving relative `goto` URLs (default: `file://` + the plan file's directory) |
 | `--results-dir <dir>` | Directory for failure screenshots (default `openwebqa-results`) |
@@ -70,6 +71,33 @@ openwebqa plan.md --dry-run
 # Level 0: load-home
 # Level 1: enter-email
 # Level 2: submit-form
+```
+
+## Plan-time exploration (`--no-blind`)
+
+By default the agent compiles the plan "blind" — from the markdown alone. With
+`--no-blind`, the plan step runs a **deep agent**: a tool-calling loop in which
+the model may inspect the current directory before it commits to the DAG.
+
+- Tools: `list_dir` (directory listing, capped at 200 entries) and `read_file`
+  (first 64 KB of a text file; binary files are refused).
+- The sandbox root is the directory you launched `openwebqa` from. Paths can
+  never leave it — `..`, absolute paths, and symlinks pointing outside are all
+  rejected.
+- The **ignore list** (default: `.*` for any hidden file/directory such as
+  `.env`/`.git`, plus `node_modules`) is enforced on every listing and read,
+  so files that should not be exposed are never shown to the model. Ignored
+  paths produce an `error:` tool result instead of content.
+- The loop stops as soon as the model replies with the plan JSON, or after a
+  bounded number of tool turns (default 10).
+
+Your endpoint must support OpenAI-style function calling (OpenAI, Ollama,
+LM Studio, ...). The deep agent uses the same `--model`/`--ai-endpoint`/
+`--api-key` options and produces the same validated DAG.
+
+```bash
+# Explore the app source in the current directory while compiling the plan
+openwebqa plan.md --no-blind
 ```
 
 ## Plan format
