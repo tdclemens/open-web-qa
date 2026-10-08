@@ -52,11 +52,17 @@ openwebqa <plan-file> [options]
 
 ### Examples
 
-Run the bundled sample plan fully offline:
+Run the bundled sample plan against the demo blog app (from the `examples/`
+directory, so the demo credentials in `examples/.openwebqa/credentials.json`
+are picked up):
 
 ```bash
-node dist/cli.js examples/sample-plan.md --agent mock
+cd examples
+node blog/server.js &   # starts the demo server on http://localhost:4173
+node ../dist/cli.js sample-plan.md --agent mock
 ```
+
+The server must be running first because the app is client/server.
 
 Run against a local model (e.g. Ollama or LM Studio):
 
@@ -202,7 +208,8 @@ npm run build       # emit dist/
 
 Layout: `src/graph/` (types, validation/cycle detection, topological levels),
 `src/agent/` (OpenAI + mock plan compilers), `src/executor/` (action mapping + DAG
-runner), `src/config.ts` (config loading/merging + login-credential planning note),
-`src/cli.ts`, `src/report.ts`, `examples/` (demo page + sample plan), `test/`.
+runner), `src/config.ts` (config/credentials loading + merging, credential
+planning note, placeholder resolution), `src/cli.ts`, `src/report.ts`,
+`examples/` (demo blog app: server + client, sample plan, and demo credentials), `test/`.
 
 This project is being developed with [pi-dag-planner](https://github.com/tdclemens/pi-dag-planner).

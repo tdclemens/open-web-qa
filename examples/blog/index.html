@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Demo Blog</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    h1 { margin-bottom: 0.5rem; }
+    section, form { margin: 1.25rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 6px; }
+    label { display: block; margin-top: 0.5rem; font-weight: 600; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 0.4rem; margin-top: 0.25rem; }
+    button { margin-top: 0.75rem; padding: 0.4rem 0.9rem; cursor: pointer; }
+    #status { min-height: 1.25rem; font-weight: 600; }
+    article { margin: 1rem 0; }
+    article h3 { margin: 0 0 0.25rem; }
+    .post-meta { margin: 0 0 0.5rem; color: #555; font-size: 0.9em; }
+    [hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Demo Blog</h1>
+
+  <p id="status" role="status"></p>
+
+  <form id="login-form">
+    <h2>Log in</h2>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" required autocomplete="email" />
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" required autocomplete="current-password" />
+    <button id="login-btn" type="submit">Log in</button>
+  </form>
+
+  <section>
+    <p>Logged in as <strong id="user" hidden></strong>
+      <button id="logout-btn" type="button" hidden>Log out</button>
+    </p>
+  </section>
+
+  <form id="new-post-form" hidden>
+    <h2>New post</h2>
+    <label for="post-title">Title</label>
+    <input id="post-title" name="title" type="text" required />
+    <label for="post-body">Body</label>
+    <textarea id="post-body" name="body" rows="4" required></textarea>
+    <button id="post-submit" type="submit">Publish</button>
+  </form>
+
+  <section>
+    <h2>Posts</h2>
+    <div id="posts"></div>
+  </section>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var loginForm = document.getElementById("login-form");
+      var emailInput = document.getElementById("email");
+      var passwordInput = document.getElementById("password");
+      var loginBtn = document.getElementById("login-btn");
+      var userEl = document.getElementById("user");
+      var logoutBtn = document.getElementById("logout-btn");
+      var newPostForm = document.getElementById("new-post-form");
+      var postTitle = document.getElementById("post-title");
+      var postBody = document.getElementById("post-body");
+      var postsEl = document.getElementById("posts");
+      var statusEl = document.getElementById("status");
+
+      var fetchOpts = { credentials: "same-origin" };
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function renderPosts(list) {
+        postsEl.textContent = "";
+        for (var i = 0; i < list.length; i++) {
+          var post = list[i];
+          var article = document.createElement("article");
+          article.innerHTML =
+            "<h3>" + escapeHtml(post.title) + "</h3>" +
+            '<p class="post-meta">by ' + escapeHtml(post.author) + "</p>" +
+            "<p>" + escapeHtml(post.body) + "</p>";
+          postsEl.appendChild(article);
+        }
+      }
+
+      async function fetchPosts() {
+        var res = await fetch("/api/posts", fetchOpts);
+        if (!res.ok) return;
+        var data = await res.json();
+        if (data && Array.isArray(data.posts)) renderPosts(data.posts);
+      }
+
+      function renderAuth(email) {
+        if (email) {
+          loginForm.hidden = true;
+          userEl.textContent = email;
+          userEl.hidden = false;
+          logoutBtn.hidden = false;
+          newPostForm.hidden = false;
+        } else {
+          loginForm.hidden = false;
+          userEl.textContent = "";
+          userEl.hidden = true;
+          logoutBtn.hidden = true;
+          newPostForm.hidden = true;
+        }
+      }
+
+      async function loadSession() {
+        var res = await fetch("/api/session", fetchOpts);
+        if (!res.ok) return;
+        var data = await res.json();
+        renderAuth(data && data.user && data.user.email);
+      }
+
+      async function handleLogin(event) {
+        event.preventDefault();
+        var email = emailInput.value.trim();
+        var password = passwordInput.value;
+        loginBtn.disabled = true;
+        try {
+          var res = await fetch("/api/login", {
+            credentials: "same-origin",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: email, password: password })
+          });
+          var data = await res.json().catch(function () { return {}; });
+          if (res.ok && data.ok && data.user && data.user.email) {
+            setStatus("Logged in as " + data.user.email);
+            renderAuth(data.user.email);
+            loginForm.reset();
+            await fetchPosts();
+          } else {
+            setStatus(typeof data.error === "string" && data.error !== "" ? data.error : "Invalid email or password");
+          }
+        } catch (err) {
+          setStatus("Invalid email or password");
+        } finally {
+          loginBtn.disabled = false;
+        }
+      }
+
+      async function handleLogout() {
+        try {
+          await fetch("/api/logout", {
+            credentials: "same-origin",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}"
+          });
+        } catch (err) {
+          // Ignore network errors; local UI state still resets below.
+        }
+        setStatus("Logged out");
+        renderAuth(null);
+      }
+
+      async function handleNewPost(event) {
+        event.preventDefault();
+        var title = postTitle.value.trim();
+        var body = postBody.value;
+        postTitle.disabled = true;
+        postBody.disabled = true;
+        try {
+          var res = await fetch("/api/posts", {
+            credentials: "same-origin",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: title, body: body })
+          });
+          var data = await res.json().catch(function () { return {}; });
+          if (res.ok && data.ok) {
+            setStatus("Post published");
+            newPostForm.reset();
+            await fetchPosts();
+          } else {
+            setStatus(typeof data.error === "string" && data.error !== "" ? data.error : "Login required");
+          }
+        } catch (err) {
+          setStatus("Login required");
+        } finally {
+          postTitle.disabled = false;
+          postBody.disabled = false;
+        }
+      }
+
+      loginForm.addEventListener("submit", handleLogin);
+      newPostForm.addEventListener("submit", handleNewPost);
+      logoutBtn.addEventListener("click", handleLogout);
+
+      // Page load: fetch session + posts, then render.
+      fetchPosts().then(function () { return loadSession(); });
+    })();
+  </script>
+</body>
+</html>

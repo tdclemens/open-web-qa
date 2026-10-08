@@ -1,4 +1,6 @@
 node_modules
 dist
 openwebqa-results
-.openwebqa
+.openwebqa/
+!examples/.openwebqa/
+!examples/.openwebqa/credentials.json
