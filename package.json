@@ -22,7 +22,7 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^12.1.0",
-    "openai": "^4.77.0",
+    "openai": "^5.23.2",
     "playwright": "^1.49.0"
   },
   "devDependencies": {

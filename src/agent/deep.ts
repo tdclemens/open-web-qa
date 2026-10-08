@@ -412,6 +412,14 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         toolTurns += 1;
         messages.push({ role: "assistant", content: message.content, tool_calls: toolCalls });
         for (const call of toolCalls) {
+          if (call.type !== "function") {
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: `error: unsupported tool call type "${call.type}"`,
+            });
+            continue;
+          }
           let parsedArgs: unknown;
           try {
             parsedArgs = call.function.arguments === "" ? {} : JSON.parse(call.function.arguments);
