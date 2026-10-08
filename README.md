@@ -73,6 +73,52 @@ openwebqa plan.md --dry-run
 # Level 2: submit-form
 ```
 
+## Configuration
+
+OpenWebQA reads a JSON config from two locations. The **project** file
+(`./.openwebqa`, in the directory you run `openwebqa` from) takes precedence
+over the **global** file (`~/.openwebqa`); fields the project file does not set
+fall back to the global file, so both may be present at the same time.
+
+| Key | Meaning | Equivalent flag |
+| --- | --- | --- |
+| `ai.model` | Model id for the AI agent | `--model` |
+| `ai.endpoint` | OpenAI-compatible base URL | `--ai-endpoint` |
+| `ai.apiKey` | API key for the endpoint | `--api-key` |
+| `login.username` | Default login username | — (auto-passed to the agent) |
+| `login.password` | Default login password | — (auto-passed to the agent) |
+
+```json
+{
+  "ai": {
+    "model": "llama3",
+    "endpoint": "http://127.0.0.1:11434/v1",
+    "apiKey": "not-needed"
+  },
+  "login": {
+    "username": "qa@example.com",
+    "password": "s3cret"
+  }
+}
+```
+
+Precedence for every setting: **CLI flag > environment variable
+(`OPENAI_BASE_URL`, `OPENAI_API_KEY`) > `./.openwebqa` > `~/.openwebqa` >
+built-in default**. All values are strings; empty strings are treated as unset.
+Unknown keys, non-string values, or invalid JSON are configuration errors
+(exit code 2) that name the offending file and key. A missing or empty config
+file is fine.
+
+**Default login credentials**: when `login` is configured, the credentials are
+automatically passed to the AI agent while it compiles the plan, so test cases
+that need to log in can use them without the credentials ever appearing in the
+plan markdown. Credentials are never printed to the console, and the offline
+`--agent mock` never receives them.
+
+The repository's `.gitignore` ignores `.openwebqa` by default because it may
+hold an API key and a password. Force-include it with `git add -f` (or a
+negation rule) if you want to commit a keyless project config.
+
 ## Plan-time exploration (`--no-blind`)
 
 By default the agent compiles the plan "blind" — from the markdown alone. With
@@ -156,6 +202,7 @@ npm run build       # emit dist/
 
 Layout: `src/graph/` (types, validation/cycle detection, topological levels),
 `src/agent/` (OpenAI + mock plan compilers), `src/executor/` (action mapping + DAG
-runner), `src/cli.ts`, `src/report.ts`, `examples/` (demo page + sample plan), `test/`.
+runner), `src/config.ts` (config loading/merging + login-credential planning note),
+`src/cli.ts`, `src/report.ts`, `examples/` (demo page + sample plan), `test/`.
 
 This project is being developed with [pi-dag-planner](https://github.com/tdclemens/pi-dag-planner).

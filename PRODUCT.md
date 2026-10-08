@@ -15,6 +15,8 @@ A Node.js CLI that turns a markdown QA test plan into a directed acyclic graph o
 - Saves a failure screenshot per failed case and prints a summary report.
 - Returns distinct exit codes for success, test failure, and usage or validation errors.
 - Offers a dry-run mode that compiles, validates, and prints execution levels without executing.
+- Reads a JSON config from `./.openwebqa` (project) and `~/.openwebqa` (global), merged field by field with the project file winning; it holds AI connection settings (model, endpoint, API key) and default login credentials.
+- Automatically passes the configured default login username/password to the AI agent while it compiles the plan, so login credentials do not need to appear in the plan markdown; settings resolve as CLI flag > env > project config > global config > default.
 
 ## Goals
 
