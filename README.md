@@ -174,8 +174,8 @@ the model may inspect the current directory before it commits to the DAG.
   `.env`/`.git`, plus `node_modules`) is enforced on every listing and read,
   so files that should not be exposed are never shown to the model. Ignored
   paths produce an `error:` tool result instead of content.
-- The loop stops as soon as the model replies with the plan JSON, or after a
-  bounded number of tool turns (default 10).
+- The loop runs with no turn cap: it stops as soon as the model replies with
+  the plan JSON.
 
 Your endpoint must support OpenAI-style function calling (OpenAI, Ollama,
 LM Studio, ...). The deep agent uses the same `--model`/`--ai-endpoint`/

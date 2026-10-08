@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Agent, MaxTurnsExceededError, tool } from "@openai/agents";
+import { Agent, tool } from "@openai/agents";
 import type { TestPlanGraph } from "../graph/types";
 import {
   buildSystemPrompt,
@@ -32,9 +32,9 @@ import type { OpenAiAgent, OpenAiAgentOptions } from "./openai";
  * The tool loop is driven by the Agents SDK runner: the model is offered the
  * two tools, tool argument errors (including invalid JSON arguments) are
  * returned to the model as `role: "tool"` messages so it can self-correct,
- * and execution stops with a clear error once the model keeps requesting
- * tools beyond `maxToolTurns` rounds (default 10) without emitting JSON
- * (checked before the request that would exceed the cap is sent).
+ * and the loop runs with no turn cap: the agent keeps exploring until it
+ * decides it has enough information, stops calling tools, and emits the plan
+ * JSON.
  * The endpoint must support OpenAI-style function calling (OpenAI, Ollama,
  * LM Studio, ...). The final message is parsed with the same `extractJson`
  * used by the plain OpenAI agent, so the returned TestPlanGraph shape is
@@ -50,9 +50,6 @@ export const MAX_READ_BYTES = 64 * 1024;
 /** Maximum number of entries `list_dir` reports per call. */
 export const MAX_LIST_ENTRIES = 200;
 
-/** Default cap on tool-calling rounds before the model must emit the plan JSON. */
-export const DEFAULT_MAX_TOOL_TURNS = 10;
-
 /** Options for {@link createDeepAgent}. */
 export interface DeepAgentOptions extends OpenAiAgentOptions {
   /** Directory the agent may explore (resolved against the process cwd). */
@@ -63,8 +60,6 @@ export interface DeepAgentOptions extends OpenAiAgentOptions {
    * Defaults to {@link DEFAULT_IGNORE_LIST}.
    */
   ignore?: string[];
-  /** Maximum number of tool-calling rounds before giving up. Defaults to 10. */
-  maxToolTurns?: number;
 }
 
 // --- Ignore-list matching --------------------------------------------------
@@ -371,7 +366,6 @@ export function buildDeepSystemPrompt(): string {
 export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
   const rootDir = path.resolve(options.rootDir);
   const patterns = (options.ignore ?? DEFAULT_IGNORE_LIST).map(compileNamePattern);
-  const maxToolTurns = options.maxToolTurns ?? DEFAULT_MAX_TOOL_TURNS;
   const chatModel = createChatModel(options);
 
   return {
@@ -391,28 +385,21 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         tools: createExplorationTools(realRoot, rootDir, patterns),
       });
 
-      try {
-        const result = await runAgentRequest(
-          () =>
-            sharedRunner.run(agent, planMarkdown, {
-              maxTurns: maxToolTurns,
-              toolNotFoundBehavior: "return_error_to_model",
-            }),
-          "OpenWebQA deep agent",
-        );
-        const content = typeof result.finalOutput === "string" ? result.finalOutput : "";
-        if (!content) {
-          throw new TypeError("OpenWebQA deep agent returned an empty response; expected a JSON TestPlanGraph");
-        }
-        return extractJson(content);
-      } catch (err) {
-        if (err instanceof MaxTurnsExceededError) {
-          throw new Error(
-            `deep agent: model requested more than ${maxToolTurns} tool turns without producing the plan JSON`,
-          );
-        }
-        throw err;
+      const result = await runAgentRequest(
+        () =>
+          sharedRunner.run(agent, planMarkdown, {
+            // No turn cap: the loop ends when the model stops calling tools
+            // and emits the plan JSON (null disables the SDK's 10-turn default).
+            maxTurns: null,
+            toolNotFoundBehavior: "return_error_to_model",
+          }),
+        "OpenWebQA deep agent",
+      );
+      const content = typeof result.finalOutput === "string" ? result.finalOutput : "";
+      if (!content) {
+        throw new TypeError("OpenWebQA deep agent returned an empty response; expected a JSON TestPlanGraph");
       }
+      return extractJson(content);
     },
   };
 }

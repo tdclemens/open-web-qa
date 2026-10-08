@@ -238,22 +238,21 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
     expect(byCallId.get("b4")).toMatch(/not a directory/);
   });
 
-  it("stops with a clear error when the model keeps requesting tool turns beyond the cap", async () => {
-    const server = await startServer(() =>
-      chatResponse({ toolCalls: [{ id: `call-${Math.random()}`, name: "list_dir", args: {} }] }),
+  it("runs with no turn cap: the agent keeps exploring until it emits the plan JSON", async () => {
+    // 15 tool rounds exceeds the SDK's 10-turn default, so this only passes
+    // when the deep agent runs with the cap disabled (maxTurns: null).
+    const toolRounds = 15;
+    const server = await startServer((body, i) =>
+      i < toolRounds
+        ? chatResponse({ toolCalls: [{ id: `call-${i}`, name: "list_dir", args: {} }] })
+        : chatResponse({ content: JSON.stringify(cannedGraph) }),
     );
     servers.push(server);
 
-    const agent = createDeepAgent({
-      baseUrl: server.url,
-      apiKey: "test",
-      rootDir: root,
-      maxToolTurns: 2,
-    });
-    await expect(agent.run("# endless plan")).rejects.toThrow(/more than 2 tool turns/);
-    // The SDK's maxTurns cap is checked before the request that would exceed
-    // it, so exactly two tool rounds are executed.
-    expect(server.requests).toHaveLength(2);
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# long exploration plan");
+    expect(graph).toEqual(cannedGraph);
+    expect(server.requests).toHaveLength(toolRounds + 1);
   });
 
   it("honors a custom ignore list via the ignore option", async () => {

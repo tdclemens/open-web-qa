@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 import {
   Agent,
-  MaxTurnsExceededError,
   OpenAIChatCompletionsModel,
   Runner,
 } from "@openai/agents";
@@ -287,8 +286,7 @@ export const sharedRunner = new Runner({ tracingDisabled: true });
 
 /**
  * Run one SDK agent request, translating unexpected failures into a stable
- * "<label> request failed: ..." Error. MaxTurnsExceededError passes through
- * untouched so callers that cap tool turns can react to the cap separately.
+ * "<label> request failed: ..." Error.
  */
 export async function runAgentRequest<T>(
   request: () => Promise<T>,
@@ -297,9 +295,6 @@ export async function runAgentRequest<T>(
   try {
     return await request();
   } catch (err) {
-    if (err instanceof MaxTurnsExceededError) {
-      throw err;
-    }
     throw new Error(
       `${requestLabel} request failed: ${err instanceof Error ? err.message : String(err)}`,
     );
