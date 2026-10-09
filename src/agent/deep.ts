@@ -10,6 +10,7 @@ import {
   sharedRunner,
 } from "./openai";
 import type { OpenAiAgent, OpenAiAgentOptions } from "./openai";
+import type { PlanningFeedback } from "./feedback";
 
 /**
  * "Deep" AI agent for OpenWebQA (plan-time directory exploration).
@@ -60,6 +61,12 @@ export interface DeepAgentOptions extends OpenAiAgentOptions {
    * Defaults to {@link DEFAULT_IGNORE_LIST}.
    */
   ignore?: string[];
+  /**
+   * Optional live feedback for the planning phase (see ./feedback.ts). When
+   * set, each list_dir/read_file call is printed inline as it runs and its
+   * line is finalized in place with a one-line summary of the result.
+   */
+  feedback?: PlanningFeedback;
 }
 
 // --- Ignore-list matching --------------------------------------------------
@@ -257,8 +264,30 @@ async function readFile(
  * The two sandboxed exploration tools, bound to this run's resolved root.
  * The SDK parses the model's tool arguments and serializes the returned
  * string back as a `role: "tool"` message.
+ *
+ * When `feedback` is set, each execution is reported to it: the command is
+ * shown inline when it starts and its line is finalized in place with a
+ * summary of the result (see ./feedback.ts).
  */
-function createExplorationTools(realRoot: string, rootDir: string, patterns: RegExp[]) {
+function createExplorationTools(
+  realRoot: string,
+  rootDir: string,
+  patterns: RegExp[],
+  feedback?: PlanningFeedback,
+) {
+  const execute = (name: "list_dir" | "read_file") => (input: unknown) => {
+    const handle = feedback?.toolStart(name, toolPathArg(input));
+    return runExplorationTool(name, input, realRoot, rootDir, patterns).then(
+      (result) => {
+        handle?.end(result);
+        return result;
+      },
+      (err: unknown) => {
+        handle?.end(`error: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      },
+    );
+  };
   return [
     tool({
       name: "list_dir",
@@ -276,8 +305,7 @@ function createExplorationTools(realRoot: string, rootDir: string, patterns: Reg
         required: [],
         additionalProperties: false,
       },
-      execute: (input: unknown) =>
-        runExplorationTool("list_dir", input, realRoot, rootDir, patterns),
+      execute: execute("list_dir"),
     }),
     tool({
       name: "read_file",
@@ -292,10 +320,18 @@ function createExplorationTools(realRoot: string, rootDir: string, patterns: Reg
         required: ["path"],
         additionalProperties: false,
       },
-      execute: (input: unknown) =>
-        runExplorationTool("read_file", input, realRoot, rootDir, patterns),
+      execute: execute("read_file"),
     }),
   ];
+}
+
+/** The path a tool call requests ("." when absent), for display and dispatch. */
+function toolPathArg(args: unknown): string {
+  const obj =
+    args !== null && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : {};
+  return typeof obj.path === "string" && obj.path.length > 0 ? obj.path : ".";
 }
 
 /**
@@ -310,11 +346,7 @@ async function runExplorationTool(
   rootDir: string,
   patterns: RegExp[],
 ): Promise<string> {
-  const obj =
-    args !== null && typeof args === "object" && !Array.isArray(args)
-      ? (args as Record<string, unknown>)
-      : {};
-  const rawPath = typeof obj.path === "string" && obj.path.length > 0 ? obj.path : ".";
+  const rawPath = toolPathArg(args);
   try {
     if (name === "list_dir") {
       return await listDir(realRoot, rootDir, rawPath, patterns);
@@ -382,7 +414,7 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         name: "openwebqa-plan-compiler-deep",
         instructions: buildDeepSystemPrompt(),
         model: chatModel,
-        tools: createExplorationTools(realRoot, rootDir, patterns),
+        tools: createExplorationTools(realRoot, rootDir, patterns, options.feedback),
       });
 
       const result = await runAgentRequest(

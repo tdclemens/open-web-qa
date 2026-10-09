@@ -186,6 +186,33 @@ LM Studio, ...). The deep agent uses the same `--model`/`--ai-endpoint`/
 openwebqa plan.md --no-blind
 ```
 
+### Live planning feedback
+
+While the AI agent compiles the plan the CLI shows animated feedback on
+**stderr** so you can see that it is still working (a plain agent call can
+take a while):
+
+```text
+  ✓ list_dir src
+  ✓ read_file src/client/app.ts — 2 KB
+  ✗ read_file .env — no such file or directory: .env
+⠼ compiling plan with gpt-4o-mini… 12s
+```
+
+- The bottom line is an animated spinner with the elapsed planning time; it
+  is rewritten in place while the model thinks and while tools run.
+- With `--no-blind`, every exploration command is printed **inline, in
+  place**: the line appears with its own spinner when the tool starts and is
+  rewritten in place with a one-line summary of the result when it finishes
+  (entry counts for `list_dir`, bytes shown for `read_file`, or the error
+  text).
+- On a TTY the status block is redrawn in place (no scrolling noise); when
+  stderr is piped (CI, scripts) plain lines are printed instead and no
+  animation is used. When `--agent mock` is selected no feedback is shown
+  (the mock compiler is instant).
+- Planning ends with a summary line (`✓ plan compiled in 12s` or
+  `✗ planning failed in 12s`); the command history stays on screen above it.
+
 ## Plan format
 
 With `--agent openai`, the plan is free-form markdown — the model converts it to a DAG.

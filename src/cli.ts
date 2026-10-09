@@ -8,7 +8,9 @@ import path from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { createMockAgent } from "./agent/mock";
 import { createOpenAiAgent } from "./agent/openai";
+import type { OpenAiAgent } from "./agent/openai";
 import { createDeepAgent, DEFAULT_IGNORE_LIST } from "./agent/deep";
+import { PlanningFeedback } from "./agent/feedback";
 import {
   ConfigError,
   buildCredentialsNote,
@@ -73,6 +75,10 @@ program
   )
   .option("--dry-run", "compile, validate, and print the execution levels, then exit without executing", false)
   .option(
+    "--no-anim",
+    "disable the in-place animated planning spinner; print plain status lines instead (also OPENWEBQA_NO_ANIM=1)",
+  )
+  .option(
     "--base-url <url>",
     "base URL for resolving relative goto URLs (default: file:// + the plan file's directory)",
   )
@@ -90,6 +96,8 @@ interface CliOptions {
   headful: boolean;
   /** Commander negation flag: true by default, false only when --no-blind is passed. */
   blind: boolean;
+  /** Commander negation flag: true by default, false only when --no-anim is passed. */
+  anim: boolean;
   dryRun: boolean;
   baseUrl?: string;
   resultsDir: string;
@@ -172,20 +180,43 @@ async function main(): Promise<void> {
     );
   }
 
-  const agent =
-    opts.agent === "mock"
-      ? createMockAgent()
-      : noBlind
-        ? createDeepAgent({ ...openAiOptions, rootDir: process.cwd() })
-        : createOpenAiAgent(openAiOptions);
+  // Animated planning feedback (src/agent/feedback.ts): a spinner line on
+  // stderr while the AI compiles the DAG (plain lines when stderr is not a
+  // TTY or --no-anim is given), plus an inline, in-place line for each
+  // exploration command the deep agent runs. The offline mock agent is
+  // instant, so it gets none.
+  // --no-anim is a commander negation flag: opts.anim defaults to true and
+  // becomes false only when the user passes --no-anim. The env override
+  // exists for terminals where in-place redraw is unreliable.
+  const noAnim = opts.anim === false || process.env.OPENWEBQA_NO_ANIM === "1";
+  const anim: boolean | undefined = noAnim ? false : undefined;
+  let agent: OpenAiAgent;
+  let feedback: PlanningFeedback | null = null;
+  if (opts.agent === "mock") {
+    agent = createMockAgent();
+  } else if (noBlind) {
+    feedback = new PlanningFeedback({ label: `compiling plan with ${ai.model}`, animate: anim });
+    agent = createDeepAgent({ ...openAiOptions, rootDir: process.cwd(), feedback });
+  } else {
+    feedback = new PlanningFeedback({ label: `compiling plan with ${ai.model}`, animate: anim });
+    agent = createOpenAiAgent(openAiOptions);
+  }
   if (noBlind) {
     console.log(
       `openwebqa: exploration enabled (root: ${process.cwd()}, ignore: ${DEFAULT_IGNORE_LIST.join(", ")})`,
     );
   }
-  const graph: TestPlanGraph = await agent.run(
-    credentialsNote !== null ? markdown + credentialsNote : markdown,
-  );
+  feedback?.start();
+  let graph: TestPlanGraph;
+  try {
+    graph = await agent.run(
+      credentialsNote !== null ? markdown + credentialsNote : markdown,
+    );
+  } catch (err) {
+    feedback?.fail();
+    throw err;
+  }
+  feedback?.finish();
 
   // 3. Validate the graph (includes circular-dependency detection).
   const errors = validateGraph(graph);

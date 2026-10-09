@@ -12,7 +12,7 @@
   "scripts": {
     "setup": "npm install && npm run build && npx playwright install chromium",
     "setup:deps": "npx playwright install-deps chromium",
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
