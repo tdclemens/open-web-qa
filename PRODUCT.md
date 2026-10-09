@@ -16,6 +16,7 @@ A Node.js CLI that turns a markdown QA test plan into a directed acyclic graph o
 - Saves a failure screenshot per failed case and prints a summary report.
 - Returns distinct exit codes for success, test failure, and usage or validation errors.
 - Offers a dry-run mode that compiles, validates, and prints execution levels without executing.
+- Supports saved JSON plans for version control: `openwebqa compile <plan.md>` compiles, validates, and writes the DAG to a JSON file (default: the plan file's basename plus .json in the current directory, override with `--out`) without executing; `openwebqa run <plan.json>` shape-checks, validates, and executes a saved plan with no AI agent; a `.json` file passed to the root command runs directly. Saved plans keep credential placeholders (never the values), so committed files stay secret-free and hand-editable between runs.
 - Reads a JSON config from a `.openwebqa/` directory in the project (`./.openwebqa/config.json`) and in the home directory (`~/.openwebqa/config.json`), merged field by field with the project file winning; it holds AI connection settings (model, endpoint, API key).
 - Stores named login credentials in `credentials.json` (in either `.openwebqa/` directory, merged per id with the project entry winning); passes each credential's id and description (never its values) to the AI agent while it compiles the plan, and substitutes `{{credential:<id>.username}}` / `{{credential:<id>.password}}` placeholders in the compiled plan with the real values before execution, so login credentials do not need to appear in the plan markdown; settings resolve as CLI flag > env > project config > global config > default.
 
@@ -25,6 +26,7 @@ A Node.js CLI that turns a markdown QA test plan into a directed acyclic graph o
 - Enable offline and local-model testing without a paid OpenAI key.
 - Give clear, actionable pass/fail results with per-case timing and screenshots.
 - Provide a fast compile-and-inspect workflow before committing to a full run.
+- Let a user keep the compiled test plan in version control as a committed, diffable JSON file that can be hand-edited and re-run without an AI agent or API key.
 
 ## Constraints
 
