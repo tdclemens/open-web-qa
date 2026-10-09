@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Agent, tool } from "@openai/agents";
+import { Agent, ToolGuardrailFunctionOutputFactory, defineToolOutputGuardrail, tool } from "@openai/agents";
 import type { OpenAIChatCompletionsModel } from "@openai/agents";
 import type { TestPlanGraph } from "../graph/types";
 import {
@@ -49,7 +49,13 @@ import type { PlanningFeedback } from "./feedback";
  * returned to the model as `role: "tool"` messages so it can self-correct,
  * and the loop runs with no turn cap: the agent keeps exploring until it
  * decides it has enough information, stops calling tools, and emits the plan
- * JSON.
+ * JSON. Because an uncapped loop is only as safe as the model's willingness
+ * to converge, a per-run loop breaker ({@link PlannerLoopBreaker}) watches
+ * the planner's tool calls: the same tool called with the same arguments
+ * {@link LOOP_BREAKER_NUDGE_AFTER} times in a row gets a "stop repeating"
+ * note appended to its result, and a streak of
+ * {@link LOOP_BREAKER_ABORT_AFTER} aborts the run with an error instead of
+ * letting a stuck model spin forever.
  * The endpoint must support OpenAI-style function calling (OpenAI, Ollama,
  * LM Studio, ...). The final message is parsed with the same `extractJson`
  * used by the plain OpenAI agent, so the returned TestPlanGraph shape is
@@ -79,6 +85,28 @@ export const MAX_EXPLORE_TURNS = 25;
  * subagent cannot bloat the planner's context.
  */
 export const MAX_EXPLORE_REPORT_BYTES = 16 * 1024;
+
+/**
+ * Consecutive identical planner tool calls (same tool, same normalized
+ * arguments) from which the loop breaker appends a "stop repeating" note to
+ * the tool result. Small local models can get stuck re-issuing the same
+ * call — most often `list_dir` of the root — where every result is identical
+ * and nothing in the conversation changes to steer them on.
+ */
+export const LOOP_BREAKER_NUDGE_AFTER = 2;
+
+/**
+ * Consecutive identical planner tool calls after which the planning run is
+ * aborted with an error: the model has ignored the nudge notes, the loop is
+ * not converging, and — with no turn cap on the planner loop — the only
+ * safe exit is a clean failure. The abort is enforced by the tools' output
+ * guardrail ({@link createPlannerLoopBreakerGuardrail}), which throws when
+ * the streak reaches this threshold; the SDK propagates guardrail errors,
+ * failing the run. (Throwing from a tool's execute would NOT abort: for
+ * tools without an outputSchema the SDK converts such errors into a generic
+ * error result and feeds it back into the stuck model.)
+ */
+export const LOOP_BREAKER_ABORT_AFTER = 5;
 
 /** Options for {@link createDeepAgent}. */
 export interface DeepAgentOptions extends OpenAiAgentOptions {
@@ -303,13 +331,15 @@ function createExplorationTools(
   rootDir: string,
   patterns: RegExp[],
   feedback?: PlanningFeedback,
+  loopBreaker?: PlannerLoopBreaker,
 ) {
   const execute = (name: "list_dir" | "read_file") => (input: unknown) => {
     const handle = feedback?.toolStart(name, toolPathArg(input));
+    const streak = loopBreaker ? loopBreaker.beginCall(name, input) : 0;
     return runExplorationTool(name, input, realRoot, rootDir, patterns).then(
       (result) => {
         handle?.end(result);
-        return result;
+        return loopBreaker && streak > 0 ? loopBreaker.annotate(name, streak, result) : result;
       },
       (err: unknown) => {
         handle?.end(`error: ${err instanceof Error ? err.message : String(err)}`);
@@ -335,6 +365,9 @@ function createExplorationTools(
         additionalProperties: false,
       },
       execute: execute("list_dir"),
+      // The breaker's output guardrail aborts the whole planning run when
+      // this tool's call streak is stuck (see createPlannerLoopBreakerGuardrail).
+      outputGuardrails: loopBreaker ? [createPlannerLoopBreakerGuardrail(loopBreaker)] : undefined,
     }),
     tool({
       name: "read_file",
@@ -350,6 +383,7 @@ function createExplorationTools(
         additionalProperties: false,
       },
       execute: execute("read_file"),
+      outputGuardrails: loopBreaker ? [createPlannerLoopBreakerGuardrail(loopBreaker)] : undefined,
     }),
   ];
 }
@@ -416,6 +450,7 @@ function createExploreTool(
   patterns: RegExp[],
   chatModel: OpenAIChatCompletionsModel,
   feedback?: PlanningFeedback,
+  loopBreaker?: PlannerLoopBreaker,
 ) {
   return tool({
     name: "explore",
@@ -444,9 +479,14 @@ function createExploreTool(
         input !== null && typeof input === "object" && !Array.isArray(input)
           ? (input as Record<string, unknown>)
           : {};
+      // Loop breaker (planner level), recorded before anything else so even a
+      // repeated empty-task error cannot spin the uncapped planner forever.
+      const streak = loopBreaker ? loopBreaker.beginCall("explore", input) : 0;
+      const finish = (out: string): string =>
+        loopBreaker && streak > 0 ? loopBreaker.annotate("explore", streak, out) : out;
       const task = typeof obj.task === "string" ? obj.task.trim() : "";
       if (task === "") {
-        return 'error: explore requires a non-empty "task" string';
+        return finish('error: explore requires a non-empty "task" string');
       }
       const handle = feedback?.toolStart("explore", task);
       try {
@@ -472,16 +512,19 @@ function createExploreTool(
           : "";
         const out = `explore subagent report:\n${body}${note}`;
         handle?.end(out);
-        return out;
+        return finish(out);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const out = message.startsWith("Max turns")
           ? `error: explore subagent hit its ${MAX_EXPLORE_TURNS}-turn limit before producing a report; ask a narrower question or read the relevant file directly`
           : `error: explore subagent failed: ${message}`;
         handle?.end(out);
-        return out;
+        return finish(out);
       }
     },
+    // The breaker's output guardrail aborts the whole planning run when
+    // this tool's call streak is stuck (see createPlannerLoopBreakerGuardrail).
+    outputGuardrails: loopBreaker ? [createPlannerLoopBreakerGuardrail(loopBreaker)] : undefined,
   });
 }
 
@@ -492,6 +535,143 @@ function toolPathArg(args: unknown): string {
       ? (args as Record<string, unknown>)
       : {};
   return typeof obj.path === "string" && obj.path.length > 0 ? obj.path : ".";
+}
+
+/**
+ * Normalize a planner tool call's arguments to a plain object. The execute
+ * closures receive parsed objects, while the loop breaker's output guardrail
+ * receives the raw protocol item whose `arguments` is still a JSON string —
+ * both must normalize identically.
+ */
+function parseToolCallArgs(input: unknown): Record<string, unknown> {
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    return input as Record<string, unknown>;
+  }
+  if (typeof input === "string") {
+    try {
+      const parsed: unknown = JSON.parse(input);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed JSON never reaches execute (the SDK feeds it back to the
+      // model before invocation), so there is no signature to compute.
+    }
+  }
+  return {};
+}
+
+/**
+ * Canonical identity of one planner tool call, used by the loop breaker to
+ * detect repetitions. `list_dir` with a missing, empty, `"."`, or `"/"` path
+ * all mean "list the project root" and collapse to one signature; `read_file`
+ * paths and `explore` tasks compare as trimmed strings.
+ */
+function toolCallSignature(name: string, input: unknown): string {
+  const obj = parseToolCallArgs(input);
+  const raw =
+    name === "explore"
+      ? typeof obj.task === "string"
+        ? obj.task.trim()
+        : ""
+      : typeof obj.path === "string"
+        ? obj.path.trim()
+        : name === "list_dir"
+          ? "."
+          : "";
+  return `${name} ${raw === "/" ? "." : raw}`;
+}
+
+/**
+ * Per-run loop breaker for the PLANNER's tool loop (the explore subagent's
+ * own tools are not watched: that run is already turn-capped).
+ *
+ * {@link PlannerLoopBreaker.beginCall} records each planner tool call as it
+ * starts executing and returns the streak of consecutive identical calls
+ * (same tool, same normalized arguments — see {@link toolCallSignature});
+ * any different call resets it. {@link PlannerLoopBreaker.annotate} passes
+ * the tool result through (streak below the nudge threshold) or appends a
+ * "stop repeating" steering note (streak ≥ {@link LOOP_BREAKER_NUDGE_AFTER}).
+ * {@link PlannerLoopBreaker.abortIfStuck} — invoked from the tools' output
+ * guardrail after each call executes — throws when the streak reached
+ * {@link LOOP_BREAKER_ABORT_AFTER}, and the SDK propagates the guardrail
+ * error, aborting the whole planning run instead of letting a stuck model
+ * spin in the uncapped loop forever.
+ *
+ * Streaks are tracked per signature (not just for the last call) so the
+ * guardrail can look up the streak of the call it is checking even when the
+ * SDK executes several tool calls from one model turn concurrently.
+ */
+export class PlannerLoopBreaker {
+  private lastSignature = "";
+  private streaks = new Map<string, number>();
+
+  /** Record one planner tool call starting execution; returns its streak. */
+  beginCall(name: string, input: unknown): number {
+    const signature = toolCallSignature(name, input);
+    const streak =
+      signature === this.lastSignature ? (this.streaks.get(signature) ?? 0) + 1 : 1;
+    if (signature !== this.lastSignature) {
+      this.streaks.clear();
+    }
+    this.lastSignature = signature;
+    this.streaks.set(signature, streak);
+    return streak;
+  }
+
+  /** The current consecutive-identical streak for this call's signature. */
+  streakFor(name: string, input: unknown): number {
+    return this.streaks.get(toolCallSignature(name, input)) ?? 0;
+  }
+
+  /**
+   * Guardrail-side check: throw when the streak of this call's signature
+   * reached the abort threshold, aborting the run (see the class docs for
+   * why the abort lives in a guardrail rather than in the tool's execute).
+   */
+  abortIfStuck(name: string, input: unknown): void {
+    const streak = this.streakFor(name, input);
+    if (streak >= LOOP_BREAKER_ABORT_AFTER) {
+      throw new Error(
+        `loop breaker: the model called ${name} with the same arguments ${streak} times in a row; ` +
+          `the planning tool loop is stuck repeating itself, so the run was aborted`,
+      );
+    }
+  }
+
+  /** Append the "stop repeating" steering note to a repeated call's result. */
+  annotate(name: string, streak: number, result: string): string {
+    if (streak >= LOOP_BREAKER_NUDGE_AFTER) {
+      return `${result}\n${loopBreakerNote(name, streak)}`;
+    }
+    return result;
+  }
+}
+
+/**
+ * The output guardrail enforcing the abort threshold: it runs after each
+ * planner tool call has executed and throws (aborting the whole planning
+ * run) when that call's streak of consecutive identical calls reached
+ * {@link LOOP_BREAKER_ABORT_AFTER}.
+ */
+function createPlannerLoopBreakerGuardrail(breaker: PlannerLoopBreaker) {
+  return defineToolOutputGuardrail({
+    name: "openwebqa-planner-loop-breaker",
+    run: async ({ toolCall }) => {
+      breaker.abortIfStuck(toolCall.name, toolCall.arguments);
+      return ToolGuardrailFunctionOutputFactory.allow();
+    },
+  });
+}
+
+/** The steering note appended to a repeated tool result. */
+function loopBreakerNote(name: string, streak: number): string {
+  return (
+    `[openwebqa loop breaker: you have now called ${name} with the same arguments ` +
+    `${streak} times in a row; repeating it will not change the result. Stop repeating ` +
+    `this call — inspect a different path, delegate to explore, or stop calling tools ` +
+    `and reply with the plan JSON now.]`
+  );
 }
 
 /**
@@ -584,13 +764,24 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         throw new Error(`deep agent: cannot resolve exploration root "${rootDir}": ${message}`);
       }
 
+      // One loop breaker per run (see PlannerLoopBreaker): the planner loop
+      // has no turn cap, so a model stuck repeating one call must be broken
+      // out of, not just nudged.
+      const loopBreaker = new PlannerLoopBreaker();
       const agent = new Agent({
         name: "openwebqa-plan-compiler-deep",
         instructions: buildDeepSystemPrompt(),
         model: chatModel,
         tools: [
-          ...createExplorationTools(realRoot, rootDir, patterns, options.feedback),
-          createExploreTool(realRoot, rootDir, patterns, chatModel, options.feedback),
+          ...createExplorationTools(realRoot, rootDir, patterns, options.feedback, loopBreaker),
+          createExploreTool(
+            realRoot,
+            rootDir,
+            patterns,
+            chatModel,
+            options.feedback,
+            loopBreaker,
+          ),
         ],
       });
 

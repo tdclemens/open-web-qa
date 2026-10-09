@@ -4,7 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
-import { createDeepAgent, DEFAULT_IGNORE_LIST, MAX_EXPLORE_REPORT_BYTES, MAX_EXPLORE_TURNS } from "../src/agent/deep";
+import {
+  createDeepAgent,
+  DEFAULT_IGNORE_LIST,
+  LOOP_BREAKER_ABORT_AFTER,
+  LOOP_BREAKER_NUDGE_AFTER,
+  MAX_EXPLORE_REPORT_BYTES,
+  MAX_EXPLORE_TURNS,
+} from "../src/agent/deep";
 import type { TestPlanGraph } from "../src/graph/types";
 
 /** A valid canned TestPlanGraph the mock endpoint can return as the final answer. */
@@ -259,10 +266,17 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
   it("runs with no turn cap: the agent keeps exploring until it emits the plan JSON", async () => {
     // 15 tool rounds exceeds the SDK's 10-turn default, so this only passes
     // when the deep agent runs with the cap disabled (maxTurns: null).
+    // The calls ALTERNATE directories on purpose: the loop breaker only trips
+    // on the SAME call repeated in a row (covered by its own tests below),
+    // and a model that keeps making different calls is not stuck.
     const toolRounds = 15;
     const server = await startServer((body, i) =>
       i < toolRounds
-        ? chatResponse({ toolCalls: [{ id: `call-${i}`, name: "list_dir", args: {} }] })
+        ? chatResponse({
+            toolCalls: [
+              { id: `call-${i}`, name: "list_dir", args: i % 2 === 0 ? {} : { path: "sub" } },
+            ],
+          })
         : chatResponse({ content: JSON.stringify(cannedGraph) }),
     );
     servers.push(server);
@@ -271,6 +285,69 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
     const graph = await agent.run("# long exploration plan");
     expect(graph).toEqual(cannedGraph);
     expect(server.requests).toHaveLength(toolRounds + 1);
+  });
+
+  it("appends a loop-breaker note to a repeated identical tool call", async () => {
+    const server = await startServer((body, i) => {
+      if (i === 0) {
+        return chatResponse({ toolCalls: [{ id: "r1", name: "list_dir", args: {} }] });
+      }
+      if (i === 1) {
+        return chatResponse({ toolCalls: [{ id: "r2", name: "list_dir", args: { path: "." } }] });
+      }
+      return chatResponse({ content: JSON.stringify(cannedGraph) });
+    });
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# repeated list plan");
+    expect(graph).toEqual(cannedGraph);
+    expect(server.requests).toHaveLength(3);
+
+    // First call (omitted path) and second call (explicit ".") normalize to
+    // the same signature, so the second one gets the steering note.
+    const second = server.requests[1].messages as Array<{ role: string; content?: string | null }>;
+    const firstResults = second.filter((m) => m.role === "tool").map((m) => m.content ?? "");
+    expect(firstResults).toHaveLength(1);
+    expect(firstResults[0]).toMatch(/^Directory:/);
+    expect(firstResults[0]).not.toContain("loop breaker");
+
+    const third = server.requests[2].messages as Array<{ role: string; content?: string | null }>;
+    const both = third.filter((m) => m.role === "tool").map((m) => m.content ?? "");
+    expect(both).toHaveLength(2);
+    const noted = both.filter((t) => t.includes("loop breaker"));
+    expect(noted).toHaveLength(1);
+    expect(noted[0]).toContain("Directory:"); // original result intact
+    expect(noted[0]).toContain(`${LOOP_BREAKER_NUDGE_AFTER} times in a row`);
+    expect(noted[0]).toContain("Stop repeating");
+  });
+
+  it("aborts the planning run when the model repeats one tool call in a row", async () => {
+    // The model never stops calling the same tool: with no turn cap on the
+    // planner loop, the loop breaker must abort the run after
+    // LOOP_BREAKER_ABORT_AFTER consecutive identical calls instead of
+    // looping forever.
+    const server = await startServer((body, i) =>
+      chatResponse({ toolCalls: [{ id: `call-${i}`, name: "list_dir", args: {} }] }),
+    );
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    await expect(agent.run("# stuck plan")).rejects.toThrow(/loop breaker/);
+    expect(server.requests.length).toBeGreaterThanOrEqual(LOOP_BREAKER_ABORT_AFTER);
+    expect(server.requests.length).toBeLessThanOrEqual(LOOP_BREAKER_ABORT_AFTER + 1);
+
+    // The nudge notes were actually delivered to the model on the repeated
+    // calls before the abort.
+    const last = server.requests[server.requests.length - 1].messages as Array<{
+      role: string;
+      content?: string | null;
+    }>;
+    const noted = last
+      .filter((m) => m.role === "tool")
+      .map((m) => m.content ?? "")
+      .filter((t) => t.includes("loop breaker"));
+    expect(noted.length).toBeGreaterThanOrEqual(LOOP_BREAKER_NUDGE_AFTER - 1);
   });
 
   it("explore delegates to a sandboxed subagent and returns only its report to the planner", async () => {
