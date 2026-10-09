@@ -13,7 +13,7 @@ A Node.js CLI that turns a markdown QA test plan into a directed acyclic graph o
 - Runs cases up to a configurable worker count concurrently, each in a fresh browser context.
 - Supports actions for goto, click, fill, press, wait, screenshot, assertions, and evaluate.
 - Cascades skips to dependents when a dependency fails or is skipped.
-- Saves a failure screenshot per failed case and prints a summary report.
+- Saves a failure screenshot per failed case and streams each case's PASS/FAIL/SKIP line as it settles, finishing with a summary report.
 - Returns distinct exit codes for success, test failure, and usage or validation errors.
 - Offers a dry-run mode that compiles, validates, and prints execution levels without executing.
 - Supports saved JSON plans for version control: `openwebqa compile <plan.md>` compiles, validates, and writes the DAG to a JSON file (default: the plan file's basename plus .json in the current directory, override with `--out`) without executing; `openwebqa run <plan.json>` shape-checks, validates, and executes a saved plan with no AI agent; a `.json` file passed to the root command runs directly. Saved plans keep credential placeholders (never the values), so committed files stay secret-free and hand-editable between runs.

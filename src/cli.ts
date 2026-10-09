@@ -37,7 +37,7 @@ import { validateGraph } from "./graph/validate";
 import { computeLevels } from "./graph/topo";
 import { parsePlanText, PlanFileError } from "./graph/plan-file";
 import { runGraph } from "./executor/runner";
-import { exitCodeFor, formatReport } from "./report";
+import { exitCodeFor, formatCaseLine, formatSummary } from "./report";
 import type { TestPlanGraph } from "./graph/types";
 
 // --- Option groups (shared between the mode programs) ---
@@ -422,15 +422,20 @@ function printLevels(graph: TestPlanGraph): void {
   });
 }
 
-/** Execute the graph and print the report; sets the process exit code. */
+/**
+ * Execute the graph, streaming one line per case as each case settles
+ * (completion order — lines interleave in parallel runs), then print the
+ * final summary line. Sets the process exit code.
+ */
 async function executeGraph(graph: TestPlanGraph, exec: ExecOpts): Promise<void> {
   const report = await runGraph(graph, {
     workers: exec.workers,
     headless: !exec.headful,
     timeoutMs: exec.timeout,
     resultsDir: exec.resultsDir,
+    onCaseSettled: (result) => console.log(formatCaseLine(result)),
   });
-  console.log(formatReport(report));
+  console.log(formatSummary(report));
   process.exitCode = exitCodeFor(report);
 }
 

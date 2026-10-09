@@ -18,42 +18,52 @@ function singleLine(text: string): string {
 }
 
 /**
- * Format a RunReport as a plain-text console summary.
- *
- * Layout (lines joined with "\n", no trailing newline):
- * - One line per case, in report order:
+ * Format one case result as a single console line:
  *     `<PASS|FAIL|SKIP> <id> <name> (<durationMs>ms)`
- *   For failed cases, the error message (if any) is appended as
- *   `error: <message>`, followed by ` | screenshot: <path>` when a
- *   screenshot path is present.
- * - A final summary line:
- *     `Total <n> | passed <x> | failed <y> | skipped <z> | elapsed <s>s`
- *   where `<s>` is the total elapsed seconds (finishedAtMs - startedAtMs,
- *   two decimal places).
+ * For failed cases, the error message (if any) is appended as
+ * `error: <message>`, followed by ` | screenshot: <path>` when a screenshot
+ * path is present. Always exactly one line (multi-line errors are flattened),
+ * which keeps streamed per-case output readable.
  */
-export function formatReport(report: RunReport): string {
-  const lines = report.results.map((r) => {
-    let line = `${statusLabel(r.status)} ${r.id} ${r.name} (${r.durationMs}ms)`;
-    if (r.status === "failed") {
-      if (r.error !== undefined) {
-        line += ` error: ${singleLine(r.error)}`;
-      }
-      if (r.screenshotPath !== undefined) {
-        line += ` | screenshot: ${singleLine(r.screenshotPath)}`;
-      }
+export function formatCaseLine(result: CaseResult): string {
+  let line = `${statusLabel(result.status)} ${result.id} ${result.name} (${result.durationMs}ms)`;
+  if (result.status === "failed") {
+    if (result.error !== undefined) {
+      line += ` error: ${singleLine(result.error)}`;
     }
-    return line;
-  });
+    if (result.screenshotPath !== undefined) {
+      line += ` | screenshot: ${singleLine(result.screenshotPath)}`;
+    }
+  }
+  return line;
+}
 
+/**
+ * Format the final summary line:
+ *     `Total <n> | passed <x> | failed <y> | skipped <z> | elapsed <s>s`
+ * where `<s>` is the total elapsed seconds (finishedAtMs - startedAtMs, two
+ * decimal places).
+ */
+export function formatSummary(report: RunReport): string {
   const passed = report.results.filter((r) => r.status === "passed").length;
   const failed = report.results.filter((r) => r.status === "failed").length;
   const skipped = report.results.filter((r) => r.status === "skipped").length;
   const elapsedSecs = (report.finishedAtMs - report.startedAtMs) / 1000;
 
-  lines.push(
-    `Total ${report.results.length} | passed ${passed} | failed ${failed} | skipped ${skipped} | elapsed ${elapsedSecs.toFixed(2)}s`
-  );
+  return `Total ${report.results.length} | passed ${passed} | failed ${failed} | skipped ${skipped} | elapsed ${elapsedSecs.toFixed(2)}s`;
+}
 
+/**
+ * Format a RunReport as a plain-text console summary.
+ *
+ * Layout (lines joined with "\n", no trailing newline): one
+ * `formatCaseLine` line per case in report order, followed by the
+ * `formatSummary` line. Use for batch output; for live streaming, print
+ * `formatCaseLine` per settlement and `formatSummary` at the end.
+ */
+export function formatReport(report: RunReport): string {
+  const lines = report.results.map(formatCaseLine);
+  lines.push(formatSummary(report));
   return lines.join("\n");
 }
 

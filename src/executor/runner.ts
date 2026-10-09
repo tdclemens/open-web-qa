@@ -26,6 +26,14 @@ export interface RunnerOptions {
   timeoutMs?: number;
   /** Directory for failure screenshots, saved as `<resultsDir>/<caseId>.png`. Default: 'openwebqa-results'. */
   resultsDir?: string;
+  /**
+   * Called immediately (synchronously) when a case reaches a terminal
+   * status — passed, failed, or skipped — in completion order, not at the
+   * end of the run. Use it to stream per-case results to the console as
+   * they happen. Errors thrown by the callback are swallowed so a broken
+   * reporter cannot abort the run.
+   */
+  onCaseSettled?: (result: CaseResult) => void;
 }
 
 type InternalStatus = "pending" | "running" | "passed" | "failed" | "skipped";
@@ -39,6 +47,10 @@ type InternalStatus = "pending" | "running" | "passed" | "failed" | "skipped";
  * browser context with a per-case timeout (`case.timeoutMs ??
  * options.timeoutMs`). On failure the case's error message is recorded and a
  * screenshot is saved to `<resultsDir>/<caseId>.png`.
+ *
+ * If `options.onCaseSettled` is provided it is invoked at the moment each
+ * case settles (including cascade skips), so callers can stream results live;
+ * without it, results are only visible in the returned report.
  *
  * @throws Error('circular dependency detected') if the graph is not a DAG
  *   (checked before any browser is launched).
@@ -86,6 +98,13 @@ export async function runGraph(graph: TestPlanGraph, options: RunnerOptions = {}
     statusById.set(id, result.status);
     resultsById.set(id, result);
     settledCount += 1;
+    if (options.onCaseSettled !== undefined) {
+      try {
+        options.onCaseSettled(result);
+      } catch {
+        // A broken reporter must not abort the run.
+      }
+    }
     if (settledCount >= total) resolveAllSettled();
   };
 

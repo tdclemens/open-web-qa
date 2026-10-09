@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { runGraph } from "../src/executor/runner";
-import type { TestPlanGraph } from "../src/graph/types";
+import type { CaseResult, TestPlanGraph } from "../src/graph/types";
 
 // In this container Chromium's shared libraries live in a user-writable
 // prefix rather than system directories; make them resolvable before any
@@ -161,6 +161,112 @@ describe("runGraph", () => {
     expect(byId.get("child")?.error).toContain("fail-first");
     expect(byId.get("grandchild")?.error).toContain("child");
     expect(byId.get("child")?.screenshotPath).toBeUndefined();
+  }, 60000);
+
+  it("streams results via onCaseSettled as cases settle, before the run resolves", async () => {
+    const settled: CaseResult[] = [];
+    const settledAtById = new Map<string, number>();
+    let resolvedAt = 0;
+    const graph: TestPlanGraph = {
+      cases: [
+        {
+          id: "early",
+          name: "early case",
+          dependsOn: [],
+          actions: [{ type: "goto", url: pageUrl }, { type: "wait", ms: 150 }],
+        },
+        {
+          id: "late",
+          name: "late case",
+          dependsOn: [],
+          actions: [{ type: "goto", url: pageUrl }, { type: "wait", ms: 700 }],
+        },
+      ],
+    };
+
+    const report = await runGraph(graph, {
+      headless: true,
+      resultsDir: path.join(resultsDir, "stream"),
+      onCaseSettled: (result) => {
+        settled.push(result);
+        settledAtById.set(result.id, Date.now());
+      },
+    });
+    resolvedAt = Date.now();
+
+    // One callback per case, in completion order (not input/report order).
+    expect(settled.map((r) => r.id)).toEqual(["early", "late"]);
+    expect(settled[0]).toBe(report.results[0]);
+    expect(settled[1]).toBe(report.results[1]);
+
+    // Liveness: the early case was reported well before the run resolved,
+    // i.e. results stream as they happen rather than in one batch at the end.
+    expect(resolvedAt - (settledAtById.get("early") ?? 0)).toBeGreaterThanOrEqual(300);
+  }, 60000);
+
+  it("reports cascade skips via onCaseSettled as they are decided", async () => {
+    const settled: CaseResult[] = [];
+    const graph: TestPlanGraph = {
+      cases: [
+        {
+          id: "fail-first",
+          name: "will fail",
+          dependsOn: [],
+          timeoutMs: 1000,
+          actions: [{ type: "goto", url: pageUrl }, { type: "click", selector: "#missing" }],
+        },
+        {
+          id: "child",
+          name: "depends on failure",
+          dependsOn: ["fail-first"],
+          actions: [{ type: "goto", url: pageUrl }],
+        },
+        {
+          id: "grandchild",
+          name: "depends on skipped",
+          dependsOn: ["child"],
+          actions: [{ type: "goto", url: pageUrl }],
+        },
+      ],
+    };
+
+    const report = await runGraph(graph, {
+      headless: true,
+      resultsDir: path.join(resultsDir, "stream-cascade"),
+      onCaseSettled: (result) => settled.push(result),
+    });
+
+    expect(settled.map((r) => [r.id, r.status])).toEqual([
+      ["fail-first", "failed"],
+      ["child", "skipped"],
+      ["grandchild", "skipped"],
+    ]);
+    expect(settled[0]).toBe(report.results[0]);
+    expect(settled[1]).toBe(report.results[1]);
+    expect(settled[2]).toBe(report.results[2]);
+  }, 60000);
+
+  it("keeps running when the onCaseSettled callback throws", async () => {
+    let calls = 0;
+    const report = await runGraph(
+      {
+        cases: [
+          { id: "a", name: "a", dependsOn: [], actions: [{ type: "goto", url: pageUrl }] },
+          { id: "b", name: "b", dependsOn: [], actions: [{ type: "goto", url: pageUrl }] },
+        ],
+      },
+      {
+        headless: true,
+        resultsDir: path.join(resultsDir, "stream-throw"),
+        onCaseSettled: () => {
+          calls += 1;
+          throw new Error("broken reporter");
+        },
+      }
+    );
+
+    expect(calls).toBe(2);
+    expect(report.results.map((r) => r.status)).toEqual(["passed", "passed"]);
   }, 60000);
 
   it("returns an empty report for an empty graph", async () => {

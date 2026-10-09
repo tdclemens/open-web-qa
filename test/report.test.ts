@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exitCodeFor, formatReport } from "../src/report";
+import { exitCodeFor, formatCaseLine, formatReport, formatSummary } from "../src/report";
 import type { CaseResult, RunReport } from "../src/graph/types";
 
 function makeResult(overrides: Partial<CaseResult> = {}): CaseResult {
@@ -19,6 +19,70 @@ function makeReport(
 ): RunReport {
   return { results, startedAtMs, finishedAtMs };
 }
+
+describe("formatCaseLine", () => {
+  it("formats a passing case on one line", () => {
+    expect(formatCaseLine(makeResult({ id: "c1", name: "Login", durationMs: 120 }))).toBe(
+      "PASS c1 Login (120ms)"
+    );
+  });
+
+  it("formats a failed case with error and screenshot", () => {
+    expect(
+      formatCaseLine(
+        makeResult({
+          id: "c2",
+          name: "Checkout",
+          status: "failed",
+          durationMs: 456,
+          error: "Timeout 30000ms exceeded",
+          screenshotPath: "/tmp/shots/c2.png",
+        })
+      )
+    ).toBe(
+      "FAIL c2 Checkout (456ms) error: Timeout 30000ms exceeded | screenshot: /tmp/shots/c2.png"
+    );
+  });
+
+  it("formats a skipped case with no details", () => {
+    expect(
+      formatCaseLine(
+        makeResult({
+          id: "c3",
+          name: "C",
+          status: "skipped",
+          durationMs: 0,
+          error: "ignored",
+          screenshotPath: "/tmp/c3.png",
+        })
+      )
+    ).toBe("SKIP c3 C (0ms)");
+  });
+});
+
+describe("formatSummary", () => {
+  it("computes counts and elapsed seconds", () => {
+    expect(
+      formatSummary(
+        makeReport(
+          [
+            makeResult({ id: "c1", name: "A" }),
+            makeResult({ id: "c2", name: "B", status: "failed", error: "boom" }),
+            makeResult({ id: "c3", name: "C", status: "skipped", durationMs: 0 }),
+          ],
+          1000,
+          9500
+        )
+      )
+    ).toBe("Total 3 | passed 1 | failed 1 | skipped 1 | elapsed 8.50s");
+  });
+
+  it("handles an empty report", () => {
+    expect(formatSummary(makeReport([], 5, 5))).toBe(
+      "Total 0 | passed 0 | failed 0 | skipped 0 | elapsed 0.00s"
+    );
+  });
+});
 
 describe("formatReport", () => {
   it("prints one line per case plus the summary line for an all-pass report", () => {

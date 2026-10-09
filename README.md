@@ -333,6 +333,11 @@ FAIL submit-form Submit form (305ms) error: ... | screenshot: openwebqa-results/
 Total 3 | passed 2 | failed 1 | skipped 0 | elapsed 0.95s
 ```
 
+Case results stream live: each `PASS`/`FAIL`/`SKIP` line is printed as soon as
+its case settles (cascade skips print the moment they are decided), so in
+parallel runs the lines appear in completion order, not plan order. Only the
+final `Total ...` line waits for the whole run to finish.
+
 Exit codes: `0` = no failed cases, skips don't count. `1` = one or more
 failures or a runtime error. `2` = bad usage, unreadable plan, or graph
 validation errors, for example circular dependencies or unknown case
