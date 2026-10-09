@@ -1,17 +1,17 @@
 # OpenWebQA
 
-A CLI that takes a **markdown QA test plan**, sends it to an **AI agent** (OpenAI or any
-OpenAI-compatible endpoint, including local models), receives a **DAG of browser test
-cases**, validates it (including circular-dependency detection), and **executes it with
-headless Playwright** — running cases in series/parallel according to their dependencies.
+A CLI tool that turns a **markdown QA test plan** into a **DAG JSON plan** with an **AI agent**,
+then runs the plan with Playwright to test a web application.
 
 ```
 plan.md ──► AI agent ──► TestPlanGraph (DAG) ──► validate ──► levels ──► Playwright run ──► report
            (JSON Plan)   (cases + dependsOn)              (topological)  (headless Chromium)
-
-plan.md ──► AI agent ──► plan.json          (openwebqa compile: save the DAG, run it later)
-plan.json ─────────────► validate ─► levels ─► Playwright run ─► report   (openwebqa run: no AI)
 ```
+
+The JSON plan is a DAG — a directed acyclic graph — that accomplishes a few things:
+1. translates the actual QA test plan written in plain english to a plan that can be executed with playwright
+2. ensures that tests are run in order
+3. parallelizes tests that can run at the same time
 
 ## Requirements
 
@@ -23,9 +23,9 @@ plan.json ─────────────► validate ─► levels ─�
 npm run setup
 ```
 
-That runs `npm install`, `npm run build`, and `npx playwright install chromium`
-(downloads the Chromium browser binary). On a bare Linux system, OS libraries may also
-be needed (requires root): `sudo npm run setup:deps`.
+That runs `npm install`, `npm run build`, and `npx playwright install chromium`,
+the last of which downloads the Chromium browser binary. On a bare Linux system,
+OS libraries may also be needed, and they require root: `sudo npm run setup:deps`.
 
 Run directly with `node dist/cli.js <plan-file> ...`, or link the binary:
 
@@ -39,38 +39,36 @@ Three modes:
 
 ```bash
 openwebqa <plan-file> [options]          # compile a markdown plan, then execute it
-openwebqa compile <plan-file> [options]  # compile, validate, and save a JSON plan file (no execution)
-openwebqa run <plan-file> [options]      # validate and execute a saved JSON plan (no AI planning)
+openwebqa compile <plan-file> [options]  # compile, validate, and save a JSON plan file without executing it
+openwebqa run <plan-file> [options]      # validate and execute a saved JSON plan, skipping AI planning
 ```
 
-A `.json` file passed to the root command is executed directly (same as `run`),
-so `openwebqa plan.json` is a shortcut for `openwebqa run plan.json`. The
-planning options (`--agent`, `--model`, `--ai-endpoint`, `--api-key`,
-`--no-blind`, `--no-anim`) apply to the markdown modes; the execution options
-(`--workers`, `--timeout`, `--headful`, `--dry-run`, `--base-url`,
-`--results-dir`) apply to the run modes. Full lists: `openwebqa --help`,
+A `.json` file passed to the root command is executed directly, exactly as `run`
+does, so `openwebqa plan.json` is a shortcut for `openwebqa run plan.json`. The table
+below notes which mode each option applies to. Full lists: `openwebqa --help`,
 `openwebqa compile --help`, `openwebqa run --help`.
 
 | Option | Applies to | Description |
 | --- | --- | --- |
-| `--agent <openai\|mock>` | root (markdown), `compile` | Agent that compiles the plan (default `openai`; `mock` is deterministic and offline) |
-| `--model <id>` | root (markdown), `compile` | Model id for the OpenAI agent (default `gpt-4o-mini`) |
-| `--ai-endpoint <url>` | root (markdown), `compile` | Custom OpenAI-compatible base URL (takes precedence over `OPENAI_BASE_URL`) |
-| `--api-key <key>` | root (markdown), `compile` | API key for the endpoint (falls back to `OPENAI_API_KEY`, then `not-needed` for keyless local servers) |
-| `--workers <n>` | root, `run` | Max test cases running in parallel (default 4) |
-| `--timeout <ms>` | root, `run` | Default per-case timeout (default 30000) |
+| `--agent <openai\|mock>` | root .md, `compile` | Agent that compiles the plan. Default `openai`; `mock` is deterministic and offline |
+| `--model <id>` | root .md, `compile` | Model id for the OpenAI agent. Default `gpt-4o-mini` |
+| `--ai-endpoint <url>` | root .md, `compile` | Custom OpenAI-compatible base URL; takes precedence over `OPENAI_BASE_URL` |
+| `--api-key <key>` | root .md, `compile` | API key for the endpoint. Falls back to `OPENAI_API_KEY`, then `not-needed` for keyless local servers |
+| `--workers <n>` | root, `run` | Max test cases running in parallel. Default 4 |
+| `--timeout <ms>` | root, `run` | Per-case timeout. Default 30000 |
 | `--headful` | root, `run` | Run the browser visibly instead of headless |
-| `--no-blind` | root (markdown), `compile` | Let the agent explore the current directory (`list_dir`/`read_file`) while it compiles the plan. An ignore list keeps hidden files and `node_modules` out of its reach. Requires `--agent openai`. |
+| `--no-blind` | root .md, `compile` | Let the agent explore the current directory while it compiles the plan — see [Plan-time exploration](#plan-time-exploration). Requires `--agent openai`. |
+| `--no-anim` | root .md, `compile` | Disable the animated planning feedback; print plain status lines instead. `OPENWEBQA_NO_ANIM=1` does the same |
 | `--dry-run` | root, `run` | Compile/validate + print execution levels, then exit without executing |
-| `--out <file>` | `compile` | Output JSON plan path (default: the plan file's basename with a `.json` extension, in the current directory) |
-| `--base-url <url>` | root, `run` | Base for resolving relative `goto` URLs (default: `file://` + the plan file's directory) |
-| `--results-dir <dir>` | root, `run` | Directory for failure screenshots (default `openwebqa-results`) |
+| `--out <file>` | `compile` | Output JSON plan path. Default: the plan file's basename with a `.json` extension, in the current directory |
+| `--base-url <url>` | root, `run` | Base for resolving relative `goto` URLs. Default: `file://` + the plan file's directory |
+| `--results-dir <dir>` | root, `run` | Directory for failure screenshots. Default `openwebqa-results` |
 
 ### Examples
 
-Run the bundled sample plan against the demo blog app (from the `examples/`
-directory, so the demo credentials in `examples/.openwebqa/credentials.json`
-are picked up):
+Run the bundled sample plan against the demo blog app. Run it from the `examples/`
+directory so the demo credentials in `examples/.openwebqa/credentials.json`
+are picked up:
 
 ```bash
 cd examples
@@ -80,7 +78,7 @@ node ../dist/cli.js sample-plan.md --agent mock
 
 The server must be running first because the app is client/server.
 
-Run against a local model (e.g. Ollama or LM Studio):
+Run against a local model such as Ollama or LM Studio:
 
 ```bash
 openwebqa plan.md --ai-endpoint http://127.0.0.1:11434/v1 --api-key not-needed --model llama3
@@ -94,14 +92,13 @@ openwebqa plan.md --dry-run
 # Level 1: read-blog-post
 ```
 
-## Saved plans (JSON)
+## Saved JSON plans
 
 To keep a test plan in version control, save the compiled DAG as a JSON file
-and run it back without an AI agent (no API key, no model):
+and run it back without an AI agent — no API key and no model needed:
 
 ```bash
-# compile the markdown plan and save it as ./sample-plan.json (the plan file's
-# basename + .json, in the current directory; override with --out)
+# compile the markdown plan and save it as ./sample-plan.json; override the path with --out
 openwebqa compile sample-plan.md
 
 # later, or in CI: validate and execute the saved plan
@@ -109,36 +106,36 @@ openwebqa run sample-plan.json
 ```
 
 - The JSON file is the exact `TestPlanGraph` shape: a `cases` array whose
-  entries have `id`, `name`, `dependsOn`, `actions` (the action types from the
-  Plan format below), and an optional `timeoutMs`. It is pretty-printed so
-  diffs in review are readable.
-- `run` validates the saved file structurally (well-formed JSON with the right
-  shape) and semantically (duplicate ids, unknown case references, unknown
-  action types, circular dependencies) before any browser work, so a
-  hand-edited plan fails with a clear message and exit code 2.
+  entries have `id`, `name`, `dependsOn`, an `actions` array built from the
+  action types in the Plan format section below, and an optional `timeoutMs`.
+  It is pretty-printed so diffs in review are readable.
+- `run` validates the saved file before any browser work. Structurally: it
+  must be well-formed JSON with the right shape. Semantically: no duplicate
+  ids, unknown case references, unknown action types, or circular
+  dependencies. A hand-edited plan that fails validation exits with code 2
+  and a clear message.
 - `{{credential:<id>.username}}` / `{{credential:<id>.password}}` placeholders
   work in saved plans exactly as in compiled ones: the values are substituted
   from `credentials.json` just before execution and never appear in the
   committed file.
-- Relative `goto` URLs resolve against the saved plan's directory (or
-  `--base-url`).
-- `openwebqa run plan.json --dry-run` validates and prints the execution
-  levels without launching a browser — a quick sanity check after a
-  hand-edit.
+- Relative `goto` URLs resolve against `--base-url`, which defaults to the
+  saved plan's directory. After a hand-edit, `openwebqa run plan.json
+  --dry-run` is a quick sanity check: it validates and prints the execution
+  levels without launching a browser.
 
 ## Configuration
 
 OpenWebQA reads JSON config from a `.openwebqa` **directory** in two
-locations. The **project** directory (`./.openwebqa/`, in the directory you
-run `openwebqa` from) takes precedence over the **global** directory
-(`~/.openwebqa/`, in your home directory); settings the project files do not
+locations. The **project** directory, `./.openwebqa/` in the directory you run
+`openwebqa` from, takes precedence over the **global** directory,
+`~/.openwebqa/` in your home directory; settings the project files do not
 set fall back to the global files, so both may be present at the same time.
 
 Each directory may hold two files:
 
 | File | Purpose |
 | --- | --- |
-| `config.json` | AI connection settings (the `ai` section) |
+| `config.json` | AI connection settings, in the `ai` section |
 | `credentials.json` | Named login credentials for test plans |
 
 ### config.json
@@ -159,17 +156,18 @@ Each directory may hold two files:
 }
 ```
 
-Precedence for every setting: **CLI flag > environment variable
-(`OPENAI_BASE_URL`, `OPENAI_API_KEY`) > `./.openwebqa/config.json` >
-`~/.openwebqa/config.json` > built-in default**. All values are strings; empty
-strings are treated as unset. Unknown keys, non-string values, or invalid JSON
-are configuration errors (exit code 2) that name the offending file and key. A
+Precedence for every setting, highest first: the CLI flag, then the
+environment variables `OPENAI_BASE_URL` and `OPENAI_API_KEY`, then
+`./.openwebqa/config.json`, then `~/.openwebqa/config.json`, then the
+built-in default. All values are strings; empty strings are treated as
+unset. Unknown keys, non-string values, or invalid JSON are configuration
+errors: the CLI exits with code 2 and names the offending file and key. A
 missing or empty file is fine.
 
 ### credentials.json
 
-A JSON array of named login credentials. Each entry has an `id` (referenced
-from plans), a `description` (what the credential is for), and a `username`
+A JSON array of named login credentials. Each entry has an `id` that plans
+reference, a `description` of what the credential is for, and a `username`
 and/or `password`:
 
 ```json
@@ -183,50 +181,52 @@ and/or `password`:
 ]
 ```
 
-When credentials are configured, their **ids and descriptions (never the
-values)** are automatically passed to the AI agent while it compiles the plan,
-so the agent can choose the right one for each login. Test cases reference a
-credential's values with placeholders in `fill` actions (or any string
-action field):
+When credentials are configured, the AI agent automatically receives each
+credential's **id and description — never its values** — while it compiles
+the plan, so it can choose the right one for each login. Test cases reference
+a credential's values with placeholders in `fill` actions, or in any string
+action field:
 
 ```
 {{credential:<id>.username}}    {{credential:<id>.password}}
 ```
 
-The CLI replaces every placeholder with the real value just before execution
-(and before `--dry-run` exits), so the values never appear in the plan
-markdown or on the console, and the offline `--agent mock` never receives them
-— its plans can use the same placeholders, and they are resolved at run time.
-A placeholder that cannot be resolved (unknown id, missing field, malformed
-placeholder, or no credentials configured at all) is a usage error (exit code
-2) that names the offending case and placeholder. Entries with the same `id`
-in the project and global files merge with the project entry winning.
+- The CLI substitutes each placeholder **just before execution**, including
+  before `--dry-run` exits, so the real values never appear in the plan
+  markdown or on the console. The offline `--agent mock` never receives them
+  either — its plans use the same placeholders, resolved at run time.
+- A placeholder that cannot be resolved — unknown id, missing field,
+  malformed placeholder, or no credentials configured at all — is a usage
+  error: the CLI exits with code 2 and names the offending case and
+  placeholder.
+- Entries with the same `id` in the project and global files merge, with the
+  project entry winning.
 
 The repository's `.gitignore` ignores `.openwebqa/` by default because it may
 hold an API key and passwords; the sample demo credential under
-`examples/.openwebqa/` is force-included with negation rules. Use `git add -f`
-(or a negation rule) to commit a keyless project config if you want one.
+`examples/.openwebqa/` is force-included with negation rules. Use `git add -f`,
+or a negation rule, to commit a keyless project config if you want one.
 
-## Plan-time exploration (`--no-blind`)
+## Plan-time exploration
 
 By default the agent compiles the plan "blind" — from the markdown alone. With
 `--no-blind`, the plan step runs a **deep agent**: a tool-calling loop in which
 the model may inspect the current directory before it commits to the DAG.
 
-- Tools: `list_dir` (directory listing, capped at 200 entries) and `read_file`
-  (first 64 KB of a text file; binary files are refused).
+- Tools: `list_dir` lists a directory, capped at 200 entries; `read_file`
+  reads the first 64 KB of a text file and refuses binary files.
 - The sandbox root is the directory you launched `openwebqa` from. Paths can
   never leave it — `..`, absolute paths, and symlinks pointing outside are all
   rejected.
-- The **ignore list** (default: `.*` for any hidden file/directory such as
-  `.env`/`.git`, plus `node_modules`) is enforced on every listing and read,
-  so files that should not be exposed are never shown to the model. Ignored
-  paths produce an `error:` tool result instead of content.
+- The **ignore list** defaults to `.*`, covering any hidden file or directory
+  such as `.env` and `.git`, plus `node_modules`. It is enforced on every
+  listing and read, so files that should not be exposed are never shown to the
+  model; ignored paths produce an `error:` tool result instead of content.
 - The loop runs with no turn cap: it stops as soon as the model replies with
   the plan JSON.
 
-Your endpoint must support OpenAI-style function calling (OpenAI, Ollama,
-LM Studio, ...). The deep agent uses the same `--model`/`--ai-endpoint`/
+Your endpoint must support OpenAI-style function calling; OpenAI, Ollama,
+and LM Studio all do. The deep agent uses the same `--model`/`--ai-endpoint`/
 `--api-key` options and produces the same validated DAG.
 
 ```bash
@@ -237,8 +237,8 @@ openwebqa plan.md --no-blind
 ### Live planning feedback
 
 While the AI agent compiles the plan the CLI shows animated feedback on
-**stderr** so you can see that it is still working (a plain agent call can
-take a while):
+**stderr** so you can see that it is still working; a plain agent call can
+take a while:
 
 ```text
   ✓ list_dir src
@@ -251,15 +251,14 @@ take a while):
   is rewritten in place while the model thinks and while tools run.
 - With `--no-blind`, every exploration command is printed **inline, in
   place**: the line appears with its own spinner when the tool starts and is
-  rewritten in place with a one-line summary of the result when it finishes
-  (entry counts for `list_dir`, bytes shown for `read_file`, or the error
-  text).
-- On a TTY the status block is redrawn in place (no scrolling noise); when
-  stderr is piped (CI, scripts) plain lines are printed instead and no
-  animation is used. When `--agent mock` is selected no feedback is shown
-  (the mock compiler is instant).
-- Planning ends with a summary line (`✓ plan compiled in 12s` or
-  `✗ planning failed in 12s`); the command history stays on screen above it.
+  rewritten in place with a one-line result summary when it finishes: entry
+  counts for `list_dir`, bytes shown for `read_file`, or the error text.
+- On a TTY the status block is redrawn in place, with no scrolling noise.
+  Plain lines are printed instead when stderr is piped, as in CI or scripts,
+  or when `--no-anim` or `OPENWEBQA_NO_ANIM=1` is set. With `--agent mock` no
+  feedback is shown; the mock compiler is instant.
+- Planning ends with a summary line such as `✓ plan compiled in 12s` or
+  `✗ planning failed in 12s`; the command history stays on screen above it.
 
 ## Plan format
 
@@ -279,21 +278,22 @@ With `--agent mock`, the plan uses a fixed grammar:
 ```
 
 Actions: `goto`, `click`, `fill`, `press`, `waitForSelector`, `wait`, `screenshot`,
-`assertUrl`, `assertText`, `evaluate` (plus `depends <id1>, <id2>, ...` for dependencies).
+`assertUrl`, `assertText`, and `evaluate`. Dependencies between cases are
+declared with a `depends <id1>, <id2>, ...` action.
 
 The text of a `fill`/`assertText` action may include a
 `{{credential:<id>.username}}` or `{{credential:<id>.password}}` placeholder;
-the CLI substitutes it from `credentials.json` before execution (see
-Configuration).
+the CLI substitutes it from `credentials.json` before execution. See the
+Configuration section.
 
 ## Execution model
 
 - Cases run as soon as all their `dependsOn` cases have **passed**, up to `--workers`
   cases concurrently; independent branches run in parallel, dependent ones in series.
-- Each case runs in a **fresh browser context** (isolation; cases that share state must
-  re-navigate or depend explicitly).
-- If a dependency fails or is skipped, dependents are **skipped** (cascade) without
-  launching browser work.
+- Each case runs in a **fresh browser context** for isolation; cases that
+  share state must re-navigate or depend explicitly.
+- If a dependency fails or is skipped, dependents are **skipped** in a
+  cascade, without launching browser work.
 - Failures record the error and save a screenshot to `<results-dir>/<case-id>.png`.
 
 ## Output & exit codes
@@ -308,9 +308,10 @@ FAIL submit-form Submit form (305ms) error: ... | screenshot: openwebqa-results/
 Total 3 | passed 2 | failed 1 | skipped 0 | elapsed 0.95s
 ```
 
-Exit codes: `0` = no failed cases (skips don't count), `1` = one or more failures or a
-runtime error, `2` = bad usage, unreadable plan, or graph validation errors (e.g.
-circular dependencies, unknown case references).
+Exit codes: `0` = no failed cases, skips don't count. `1` = one or more
+failures or a runtime error. `2` = bad usage, unreadable plan, or graph
+validation errors, for example circular dependencies or unknown case
+references.
 
 ## Development
 
@@ -320,12 +321,15 @@ npm test            # vitest run
 npm run build       # emit dist/
 ```
 
-Layout: `src/graph/` (types, validation/cycle detection, topological levels,
-saved-plan JSON parsing), `src/agent/` (OpenAI + mock plan compilers),
-`src/executor/` (action mapping + DAG runner), `src/config.ts` (config/credentials
-loading + merging, credential planning note, placeholder resolution),
-`src/cli.ts` (root + `compile`/`run` mode programs), `src/report.ts`,
-`examples/` (demo blog app: server + client, sample plan, and demo credentials),
-`test/`.
+Layout:
+
+- `src/graph/` — types, validation/cycle detection, topological levels, saved-plan JSON parsing
+- `src/agent/` — OpenAI + mock plan compilers, deep agent, planning feedback
+- `src/executor/` — action mapping + DAG runner
+- `src/config.ts` — config/credentials loading + merging, credential planning note, placeholder resolution
+- `src/cli.ts` — root + `compile`/`run` mode programs
+- `src/report.ts` — console output formatting + exit codes
+- `examples/` — demo blog app: server + client, sample plan, and demo credentials
+- `test/` — vitest test suite
 
 This project is being developed with [pi-dag-planner](https://github.com/tdclemens/pi-dag-planner).
