@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Agent, tool } from "@openai/agents";
+import type { OpenAIChatCompletionsModel } from "@openai/agents";
 import type { TestPlanGraph } from "../graph/types";
 import {
   buildSystemPrompt,
@@ -17,9 +18,22 @@ import type { PlanningFeedback } from "./feedback";
  *
  * Wraps the OpenAI-compatible chat endpoint used by ./openai.ts in a
  * tool-calling loop: while compiling the markdown QA plan into a
- * TestPlanGraph, the model may inspect the local project directory with two
- * tools — `list_dir` and `read_file` — so it can verify page URLs, CSS
- * selectors, and expected text against the actual application source.
+ * TestPlanGraph, the model may inspect the local project directory with
+ * three tools so it can verify page URLs, CSS selectors, and expected text
+ * against the actual application source:
+ *
+ *   - `list_dir` / `read_file`: direct, sandboxed reads. Cheap for a quick
+ *     orientation listing, but every byte read this way stays in the
+ *     planner's context for the rest of the run.
+ *   - `explore`: delegates a focused question to an exploration subagent —
+ *     a fresh agent with the SAME sandboxed list_dir/read_file tools but its
+ *     OWN conversation context. The subagent runs its own tool loop and only
+ *     its short findings report is returned to the planner, so file reads
+ *     done by the subagent never enter the planner's context. This keeps the
+ *     planner's context small on large projects. Two caps keep the pattern
+ *     safe in both directions: the subagent's run is turn-limited
+ *     ({@link MAX_EXPLORE_TURNS}) and its report is truncated to
+ *     {@link MAX_EXPLORE_REPORT_BYTES} before it reaches the planner.
  *
  * Exploration is sandboxed:
  *   - Every tool path is resolved against `rootDir` and must stay inside it
@@ -31,7 +45,7 @@ import type { PlanningFeedback } from "./feedback";
  *     model.
  *
  * The tool loop is driven by the Agents SDK runner: the model is offered the
- * two tools, tool argument errors (including invalid JSON arguments) are
+ * three tools, tool argument errors (including invalid JSON arguments) are
  * returned to the model as `role: "tool"` messages so it can self-correct,
  * and the loop runs with no turn cap: the agent keeps exploring until it
  * decides it has enough information, stops calling tools, and emits the plan
@@ -50,6 +64,21 @@ export const MAX_READ_BYTES = 64 * 1024;
 
 /** Maximum number of entries `list_dir` reports per call. */
 export const MAX_LIST_ENTRIES = 200;
+
+/**
+ * Turn cap for one exploration subagent run. The SDK throws
+ * MaxTurnsExceededError once the subagent burns this many turns without
+ * stopping to write its report, which is turned into an error tool result
+ * the planner can react to (ask a narrower question, or read directly).
+ */
+export const MAX_EXPLORE_TURNS = 25;
+
+/**
+ * Maximum UTF-8 bytes of an exploration subagent report that are returned to
+ * the planner. Longer reports are truncated (with a note), so a chatty
+ * subagent cannot bloat the planner's context.
+ */
+export const MAX_EXPLORE_REPORT_BYTES = 16 * 1024;
 
 /** Options for {@link createDeepAgent}. */
 export interface DeepAgentOptions extends OpenAiAgentOptions {
@@ -325,6 +354,137 @@ function createExplorationTools(
   ];
 }
 
+/**
+ * Truncate `text` to at most `maxBytes` UTF-8 bytes without splitting a
+ * multibyte character. Returns the (possibly unchanged) text and whether a
+ * truncation happened.
+ */
+function truncateUtf8(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
+  let cut = text.slice(0, maxBytes);
+  while (Buffer.byteLength(cut, "utf8") > maxBytes) {
+    cut = cut.slice(0, -1);
+  }
+  return { text: cut, truncated: true };
+}
+
+/**
+ * System prompt for an exploration subagent: a focused inspector with the
+ * sandboxed tools, asked to reply with a short, fact-dense findings report
+ * instead of raw file dumps. The report is the ONLY thing the planner ever
+ * sees of the subagent's work, so it must carry the verified values.
+ */
+export function buildExploreSubagentPrompt(): string {
+  return [
+    "You are an exploration subagent for OpenWebQA plan compilation.",
+    "You receive one focused question or task about a web application whose",
+    "source is in the current project directory. Inspect the application with",
+    "the two tools available to you:",
+    '- list_dir: list a directory relative to the project root (omit "path" to',
+    "  list the root). Hidden files and other ignored entries are never listed.",
+    '- read_file: read a text file relative to the project root (first 64 KB).',
+    "",
+    "Keep every path inside the project root, and never request ignored paths",
+    '(hidden files, node_modules, or anything else refused with an "error:"',
+    "result).",
+    "",
+    "When you have enough information, stop calling tools and reply with a",
+    "concise plain-text findings report (no markdown, no code fences):",
+    "- the direct answer to the task,",
+    "- each exact page URL, element id, CSS selector, or expected text you",
+    "  verified, with the file (and line, when practical) where you found it,",
+    "- brief notes on related facts the planner should know.",
+    "Quote only the few lines you need - do not paste whole file contents. Keep",
+    "the report short (about 40 lines or fewer).",
+  ].join("\n");
+}
+
+/**
+ * The `explore` tool: delegate one focused question to an exploration
+ * subagent. The subagent is a fresh agent with its own conversation context
+ * and the same sandboxed list_dir/read_file tools (built WITHOUT feedback,
+ * so its internal reads do not clutter the console); it runs its own tool
+ * loop until it stops calling tools, and only its final report — turn-capped
+ * and byte-capped — is returned to the planner as the tool result.
+ *
+ * Never throws for expected failures: the subagent's errors come back as
+ * "error: ..." strings so the planner can adjust and keep going.
+ */
+function createExploreTool(
+  realRoot: string,
+  rootDir: string,
+  patterns: RegExp[],
+  chatModel: OpenAIChatCompletionsModel,
+  feedback?: PlanningFeedback,
+) {
+  return tool({
+    name: "explore",
+    description:
+      "Delegate a focused question about the application to an exploration " +
+      "subagent. Pass ONE specific question or task (for example: \"what CSS " +
+      "selector does the sign-in form use for the email field, and what text " +
+      "appears after a failed submit?\"). The subagent has the same sandboxed " +
+      "list_dir/read_file tools in its OWN context: everything it reads stays " +
+      "out of your context and only its short findings report is returned. " +
+      "Prefer this over reading many files yourself; batch related questions " +
+      "about the same area into a single task.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "The focused exploration question or task for the subagent",
+        },
+      },
+      required: ["task"],
+      additionalProperties: false,
+    },
+    execute: async (input: unknown) => {
+      const obj =
+        input !== null && typeof input === "object" && !Array.isArray(input)
+          ? (input as Record<string, unknown>)
+          : {};
+      const task = typeof obj.task === "string" ? obj.task.trim() : "";
+      if (task === "") {
+        return 'error: explore requires a non-empty "task" string';
+      }
+      const handle = feedback?.toolStart("explore", task);
+      try {
+        const subAgent = new Agent({
+          name: "openwebqa-explore-subagent",
+          instructions: buildExploreSubagentPrompt(),
+          model: chatModel,
+          tools: createExplorationTools(realRoot, rootDir, patterns),
+        });
+        const result = await sharedRunner.run(subAgent, task, {
+          // The subagent must converge on a report: unlike the planner loop
+          // (uncapped), a subagent that never stops is a failure, not depth.
+          maxTurns: MAX_EXPLORE_TURNS,
+          toolNotFoundBehavior: "return_error_to_model",
+        });
+        const report = typeof result.finalOutput === "string" ? result.finalOutput : "";
+        if (report === "") {
+          throw new Error("the subagent returned an empty report");
+        }
+        const { text: body, truncated } = truncateUtf8(report, MAX_EXPLORE_REPORT_BYTES);
+        const note = truncated
+          ? `\n[report truncated: showing first ${MAX_EXPLORE_REPORT_BYTES} of ${Buffer.byteLength(report, "utf8")} bytes]`
+          : "";
+        const out = `explore subagent report:\n${body}${note}`;
+        handle?.end(out);
+        return out;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const out = message.startsWith("Max turns")
+          ? `error: explore subagent hit its ${MAX_EXPLORE_TURNS}-turn limit before producing a report; ask a narrower question or read the relevant file directly`
+          : `error: explore subagent failed: ${message}`;
+        handle?.end(out);
+        return out;
+      }
+    },
+  });
+}
+
 /** The path a tool call requests ("." when absent), for display and dispatch. */
 function toolPathArg(args: unknown): string {
   const obj =
@@ -366,7 +526,9 @@ async function runExplorationTool(
 
 /**
  * System prompt for deep mode: the standard "reply with ONLY the JSON
- * TestPlanGraph" instructions plus the exploration-mode rules.
+ * TestPlanGraph" instructions plus the exploration-mode rules, including the
+ * context-discipline guidance that steers file-heavy questions to the
+ * explore subagent instead of direct reads.
  */
 export function buildDeepSystemPrompt(): string {
   return [
@@ -374,10 +536,22 @@ export function buildDeepSystemPrompt(): string {
     "",
     "Exploration mode is enabled: the pages under test come from a web application",
     "whose source is in the current project directory. Before writing the plan you",
-    "MAY inspect that application with two tools:",
+    "MAY inspect that application with three tools:",
     '- list_dir: list a directory relative to the project root (omit "path" to list',
     "  the root). Hidden files and other ignored entries are never listed.",
     '- read_file: read a text file relative to the project root (first 64 KB).',
+    "- explore: hand ONE focused question about the application to an exploration",
+    "  subagent. It has the same sandboxed list_dir/read_file tools in its OWN",
+    "  context: everything it reads stays OUT of your context, and only its short",
+    "  findings report is returned to you.",
+    "",
+    "Context discipline:",
+    "- Every tool result you receive stays in your context for the whole run, so",
+    "  files you read_file yourself are a permanent cost. Keep your own reads to a",
+    "  few quick checks (e.g. a list_dir of the root for orientation).",
+    "- Use explore for anything that requires opening files - especially when the",
+    "  answer spans several files - and batch related questions about the same",
+    "  area into a single explore task.",
     "",
     "Use the tools to verify page URLs, element ids/CSS selectors, and expected text",
     "so the generated test cases match the real application. Keep every path inside",
@@ -414,7 +588,10 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         name: "openwebqa-plan-compiler-deep",
         instructions: buildDeepSystemPrompt(),
         model: chatModel,
-        tools: createExplorationTools(realRoot, rootDir, patterns, options.feedback),
+        tools: [
+          ...createExplorationTools(realRoot, rootDir, patterns, options.feedback),
+          createExploreTool(realRoot, rootDir, patterns, chatModel, options.feedback),
+        ],
       });
 
       const result = await runAgentRequest(

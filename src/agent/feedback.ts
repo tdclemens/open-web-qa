@@ -7,11 +7,15 @@
  *
  *   - An animated status line (spinner + elapsed time) runs for the whole
  *     planning phase, so a slow model call is visibly alive.
- *   - When the "deep" agent (see ./deep.ts) calls an exploration tool, the
- *     command is printed inline, in place: its line appears with a spinner as
- *     the tool starts, and is rewritten in place with a one-line summary of
- *     the result when the tool finishes (e.g.
- *     `  ✓ read_file src/app.ts — 2 KB`).
+ *   - When the "deep" agent (see ./deep.ts) calls an exploration tool,
+ *     including the `explore` subagent delegate, the command is printed
+ *     inline, in place: its line appears with a spinner as the tool starts,
+ *     and is rewritten in place with a one-line summary of the result when
+ *     the tool finishes (e.g. `  ✓ read_file src/app.ts — 2 KB`,
+ *     `  ✓ explore which selector does the login form use… — report, 1.1 KB`).
+ *     The subagent's own file reads are NOT reported: only the one `explore`
+ *     line is shown, matching the fact that the subagent's work stays out of
+ *     the planner's context.
  *
  * Output goes to stderr so stdout stays clean for the plan/execution report.
  * When stderr is a TTY with a known size the status block is redrawn in
@@ -333,7 +337,8 @@ function clipKeepTail(text: string, max: number): string {
 /**
  * Turn a raw tool result into a short human summary for the console.
  * `error:` results become ✗ lines; successful `list_dir` results report the
- * entry count; successful `read_file` results report the size shown.
+ * entry count; successful `read_file` results report the size shown;
+ * successful `explore` results report the size of the subagent report.
  */
 export function summarizeToolResult(
   name: string,
@@ -374,6 +379,12 @@ export function summarizeToolResult(
       };
     }
     return { ok: true, detail: total ? formatBytes(Number(total[1])) : "read" };
+  }
+  if (name === "explore") {
+    // Successful explore results always carry the "explore subagent report:"
+    // prefix (see ./deep.ts); anything else is already an error: line.
+    const size = formatBytes(Buffer.byteLength(result, "utf8"));
+    return { ok: true, detail: `report, ${size}` };
   }
   return { ok: true, detail: "done" };
 }

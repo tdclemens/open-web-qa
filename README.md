@@ -57,7 +57,7 @@ below notes which mode each option applies to. Full lists: `openwebqa --help`,
 | `--workers <n>` | root, `run` | Max test cases running in parallel. Default 4 |
 | `--timeout <ms>` | root, `run` | Per-case timeout. Default 30000 |
 | `--headful` | root, `run` | Run the browser visibly instead of headless |
-| `--no-blind` | root .md, `compile` | Let the agent explore the current directory while it compiles the plan — see [Plan-time exploration](#plan-time-exploration). Requires `--agent openai`. |
+| `--no-blind` | root .md, `compile` | Let the agent explore the current directory while it compiles the plan (file-heavy digging via explore subagents, to keep the planner's context clean) — see [Plan-time exploration](#plan-time-exploration). Requires `--agent openai`. |
 | `--no-anim` | root .md, `compile` | Disable the animated planning feedback; print plain status lines instead. `OPENWEBQA_NO_ANIM=1` does the same |
 | `--dry-run` | root, `run` | Compile/validate + print execution levels, then exit without executing |
 | `--out <file>` | `compile` | Output JSON plan path. Default: the plan file's basename with a `.json` extension, in the current directory |
@@ -214,16 +214,31 @@ By default the agent compiles the plan "blind" — from the markdown alone. With
 the model may inspect the current directory before it commits to the DAG.
 
 - Tools: `list_dir` lists a directory, capped at 200 entries; `read_file`
-  reads the first 64 KB of a text file and refuses binary files.
+  reads the first 64 KB of a text file and refuses binary files; `explore`
+  delegates a focused question to an **exploration subagent** (below).
+- **Explore subagents keep the planner's context clean.** A tool result —
+  especially a file read — stays in the planner's context for the whole run,
+  which is expensive and unreliable on large projects. `explore` hands one
+  focused question (e.g. "what CSS selector does the sign-in form use for the
+  email field?") to a fresh subagent that has the same sandboxed tools but
+  its **own context**: the subagent runs its own tool loop, and only its short
+  findings report comes back to the planner. Files the subagent reads never
+  enter the planner's context. The system prompt steers the planner to use
+  `list_dir` directly for quick orientation and `explore` for anything that
+  requires opening files.
+- Subagent runs are bounded in both directions: the subagent is turn-capped
+  (a subagent that never converges becomes an `error:` result the planner can
+  react to), and its report is truncated to 16 KB before it reaches the
+  planner.
 - The sandbox root is the directory you launched `openwebqa` from. Paths can
   never leave it — `..`, absolute paths, and symlinks pointing outside are all
-  rejected.
+  rejected. This applies inside subagents too.
 - The **ignore list** defaults to `.*`, covering any hidden file or directory
   such as `.env` and `.git`, plus `node_modules`. It is enforced on every
   listing and read, so files that should not be exposed are never shown to the
   model; ignored paths produce an `error:` tool result instead of content.
-- The loop runs with no turn cap: it stops as soon as the model replies with
-  the plan JSON.
+- The planner loop runs with no turn cap: it stops as soon as the model
+  replies with the plan JSON.
 
 Your endpoint must support OpenAI-style function calling; OpenAI, Ollama,
 and LM Studio all do. The deep agent uses the same `--model`/`--ai-endpoint`/
@@ -241,6 +256,7 @@ While the AI agent compiles the plan the CLI shows animated feedback on
 take a while:
 
 ```text
+  ✓ explore which selector does the login form use… — report, 1.1 KB
   ✓ list_dir src
   ✓ read_file src/client/app.ts — 2 KB
   ✗ read_file .env — no such file or directory: .env
@@ -252,7 +268,9 @@ take a while:
 - With `--no-blind`, every exploration command is printed **inline, in
   place**: the line appears with its own spinner when the tool starts and is
   rewritten in place with a one-line result summary when it finishes: entry
-  counts for `list_dir`, bytes shown for `read_file`, or the error text.
+  counts for `list_dir`, bytes shown for `read_file`, the report size for
+  `explore`, or the error text. A subagent's internal file reads are not
+  printed — one `explore` line covers the whole delegated task.
 - On a TTY the status block is redrawn in place, with no scrolling noise.
   Plain lines are printed instead when stderr is piped, as in CI or scripts,
   or when `--no-anim` or `OPENWEBQA_NO_ANIM=1` is set. With `--agent mock` no

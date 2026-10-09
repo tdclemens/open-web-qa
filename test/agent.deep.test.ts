@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
-import { createDeepAgent, DEFAULT_IGNORE_LIST } from "../src/agent/deep";
+import { createDeepAgent, DEFAULT_IGNORE_LIST, MAX_EXPLORE_REPORT_BYTES, MAX_EXPLORE_TURNS } from "../src/agent/deep";
 import type { TestPlanGraph } from "../src/graph/types";
 
 /** A valid canned TestPlanGraph the mock endpoint can return as the final answer. */
@@ -88,6 +88,24 @@ function sawToolResult(body: Record<string, unknown>): boolean {
   return messages.some((m) => m.role === "tool");
 }
 
+/**
+ * True when the request belongs to the exploration SUBAGENT rather than the
+ * planner: both run against the same endpoint, but the subagent's system
+ * prompt is the explorer prompt ("exploration subagent"), while the
+ * planner's is the deep-plan-compiler prompt ("Exploration mode is").
+ */
+function isSubagentRequest(body: Record<string, unknown>): boolean {
+  const messages = (body.messages as Array<{ role: string; content?: string }> | undefined) ?? [];
+  const system = messages.find((m) => m.role === "system")?.content;
+  return typeof system === "string" && system.includes("exploration subagent");
+}
+
+/** The role-"tool" message contents of a request, in order. */
+function toolResultsOf(body: Record<string, unknown>): string[] {
+  const messages = (body.messages as Array<{ role: string; content?: string }> | undefined) ?? [];
+  return messages.filter((m) => m.role === "tool").map((m) => m.content ?? "");
+}
+
 describe("createDeepAgent (plan-time directory exploration)", () => {
   let root: string;
   let outsideDir: string;
@@ -141,7 +159,7 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
     const firstMessages = first.messages as Array<{ role: string }>;
     expect(firstMessages.map((m) => m.role)).toEqual(["system", "user"]);
     const tools = first.tools as Array<{ type: string; function: { name: string } }>;
-    expect(tools.map((t) => t.function.name).sort()).toEqual(["list_dir", "read_file"]);
+    expect(tools.map((t) => t.function.name).sort()).toEqual(["explore", "list_dir", "read_file"]);
     // Plain text output: no response_format on the wire (see openai.ts).
     expect(first.response_format).toBeUndefined();
 
@@ -253,6 +271,161 @@ describe("createDeepAgent (plan-time directory exploration)", () => {
     const graph = await agent.run("# long exploration plan");
     expect(graph).toEqual(cannedGraph);
     expect(server.requests).toHaveLength(toolRounds + 1);
+  });
+
+  it("explore delegates to a sandboxed subagent and returns only its report to the planner", async () => {
+    const report =
+      'Findings:\n- Title element: <h1 id="title"> in index.html (line 1).\n' +
+      "- .env is on the ignore list and was not readable.";
+    const server = await startServer((body) => {
+      if (isSubagentRequest(body)) {
+        return sawToolResult(body)
+          ? chatResponse({ content: report })
+          : chatResponse({
+              toolCalls: [
+                { id: "s1", name: "read_file", args: { path: ".env" } },
+                { id: "s2", name: "list_dir", args: {} },
+              ],
+            });
+      }
+      return sawToolResult(body)
+        ? chatResponse({ content: JSON.stringify(cannedGraph) })
+        : chatResponse({
+            toolCalls: [
+              { id: "p1", name: "explore", args: { task: "Which element renders the page title?" } },
+            ],
+          });
+    });
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# explore plan");
+    expect(graph).toEqual(cannedGraph);
+
+    const plannerRequests = server.requests.filter((b) => !isSubagentRequest(b));
+    const subagentRequests = server.requests.filter(isSubagentRequest);
+    expect(plannerRequests).toHaveLength(2);
+    expect(subagentRequests).toHaveLength(2);
+
+    // The subagent got its own context: system + user(task), nothing from
+    // the planner's conversation.
+    const subFirst = subagentRequests[0].messages as Array<{ role: string; content?: string }>;
+    expect(subFirst.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(subFirst[1].content).toBe("Which element renders the page title?");
+
+    // The sandbox applies INSIDE the subagent too: the .env read is refused
+    // and its content never appears in either agent's history.
+    expect(toolResultsOf(subagentRequests[1]).some((t) => t.startsWith("error:") && t.includes("ignore list"))).toBe(true);
+    for (const req of server.requests) {
+      expect(JSON.stringify(req.messages)).not.toContain("topsecret");
+    }
+
+    // The planner receives ONLY the subagent's report - no directory
+    // listings, no raw file contents from the subagent's own reads.
+    const plannerResults = toolResultsOf(plannerRequests[1]);
+    expect(plannerResults).toEqual([`explore subagent report:\n${report}`]);
+    const plannerHistory = JSON.stringify(plannerRequests[1].messages);
+    expect(plannerHistory).not.toContain("Directory:");
+    expect(plannerHistory).not.toContain("<h1 id=title>");
+  });
+
+  it("caps the subagent at MAX_EXPLORE_TURNS and reports the failure back to the planner", async () => {
+    const server = await startServer((body) => {
+      if (isSubagentRequest(body)) {
+        // The subagent never stops calling tools; the turn cap must stop it.
+        return chatResponse({ toolCalls: [{ id: `loop-${server.requests.length}`, name: "list_dir", args: {} }] });
+      }
+      return sawToolResult(body)
+        ? chatResponse({ content: JSON.stringify(cannedGraph) })
+        : chatResponse({
+            toolCalls: [{ id: "p1", name: "explore", args: { task: "explore forever" } }],
+          });
+    });
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# runaway subagent plan");
+    expect(graph).toEqual(cannedGraph);
+
+    const subagentRequests = server.requests.filter(isSubagentRequest);
+    expect(subagentRequests.length).toBeGreaterThan(1);
+    // The SDK allows maxTurns + 1 model calls before throwing.
+    expect(subagentRequests.length).toBeLessThanOrEqual(MAX_EXPLORE_TURNS + 2);
+
+    const plannerRequests = server.requests.filter((b) => !isSubagentRequest(b));
+    const plannerResults = toolResultsOf(plannerRequests[plannerRequests.length - 1]);
+    expect(plannerResults[0]).toMatch(/^error: explore subagent hit its \d+-turn limit/);
+  });
+
+  it("truncates an oversized subagent report before it reaches the planner", async () => {
+    const hugeReport = "R".repeat(MAX_EXPLORE_REPORT_BYTES + 4096);
+    const server = await startServer((body) => {
+      if (isSubagentRequest(body)) return chatResponse({ content: hugeReport });
+      return sawToolResult(body)
+        ? chatResponse({ content: JSON.stringify(cannedGraph) })
+        : chatResponse({
+            toolCalls: [{ id: "p1", name: "explore", args: { task: "very long answer" } }],
+          });
+    });
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# big report plan");
+    expect(graph).toEqual(cannedGraph);
+
+    const plannerRequests = server.requests.filter((b) => !isSubagentRequest(b));
+    const result = toolResultsOf(plannerRequests[1])[0] ?? "";
+    expect(result).toContain(
+      `[report truncated: showing first ${MAX_EXPLORE_REPORT_BYTES} of ${MAX_EXPLORE_REPORT_BYTES + 4096} bytes]`,
+    );
+    // The planner's copy of the report respects the byte cap (plus the
+    // header/truncation-note overhead); the full report never reaches it: the
+    // longest run of R's is the cap, not the original length.
+    const body = result.slice("explore subagent report:\n".length);
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(MAX_EXPLORE_REPORT_BYTES + 80);
+    const longestRun = (result.match(/R+/g) ?? []).reduce((a, b) => Math.max(a, b.length), 0);
+    expect(longestRun).toBe(MAX_EXPLORE_REPORT_BYTES);
+  });
+
+  it("rejects an empty explore task with an error tool result and starts no subagent", async () => {
+    const server = await startServer((body) => {
+      if (isSubagentRequest(body)) throw new Error("subagent must not be started for an empty task");
+      return sawToolResult(body)
+        ? chatResponse({ content: JSON.stringify(cannedGraph) })
+        : chatResponse({
+            toolCalls: [{ id: "p1", name: "explore", args: {} }],
+          });
+    });
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# empty task plan");
+    expect(graph).toEqual(cannedGraph);
+
+    const plannerRequests = server.requests.filter((b) => !isSubagentRequest(b));
+    const result = toolResultsOf(plannerRequests[1])[0] ?? "";
+    expect(result).toMatch(/^error: explore requires a non-empty "task"/);
+    expect(server.requests.filter(isSubagentRequest)).toHaveLength(0);
+  });
+
+  it("reports a subagent that produced no output as an error tool result", async () => {
+    const server = await startServer((body) => {
+      if (isSubagentRequest(body)) return chatResponse({ content: "" });
+      return sawToolResult(body)
+        ? chatResponse({ content: JSON.stringify(cannedGraph) })
+        : chatResponse({
+            toolCalls: [{ id: "p1", name: "explore", args: { task: "answer in silence" } }],
+          });
+    });
+    servers.push(server);
+
+    const agent = createDeepAgent({ baseUrl: server.url, apiKey: "test", rootDir: root });
+    const graph = await agent.run("# silent subagent plan");
+    expect(graph).toEqual(cannedGraph);
+
+    const plannerRequests = server.requests.filter((b) => !isSubagentRequest(b));
+    const result = toolResultsOf(plannerRequests[1])[0] ?? "";
+    expect(result).toMatch(/^error: explore subagent failed: .*empty report/);
   });
 
   it("honors a custom ignore list via the ignore option", async () => {

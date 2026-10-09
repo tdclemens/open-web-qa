@@ -87,6 +87,23 @@ describe("summarizeToolResult", () => {
     expect(long.detail.length).toBeLessThanOrEqual(70);
     expect(long.detail.startsWith("…")).toBe(true);
   });
+
+  it("summarizes explore subagent reports by size", () => {
+    const report = summarizeToolResult(
+      "explore",
+      "explore subagent report:\n- button: #submit-btn (src/app.ts)",
+    );
+    expect(report.ok).toBe(true);
+    expect(report.detail).toMatch(/^report, \d+(\.\d+)? (B|KB|MB)$/);
+
+    // A truncated report still summarizes as the size the planner received.
+    const big = summarizeToolResult(
+      "explore",
+      `explore subagent report:\n${"y".repeat(20 * 1024)}\n[report truncated: showing first 16384 of 20480 bytes]`,
+    );
+    expect(big.ok).toBe(true);
+    expect(big.detail).toBe("report, 20.1 KB");
+  });
 });
 
 describe("formatBytes / formatElapsed", () => {

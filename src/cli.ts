@@ -54,8 +54,10 @@ function addAgentOptions(cmd: Command): Command {
     .option("--api-key <key>", "API key for the AI endpoint (env OPENAI_API_KEY fallback)")
     .option(
       "--no-blind",
-      "let the OpenAI agent explore the current directory (list_dir/read_file) while it compiles the " +
-        "plan; the ignore list keeps hidden files and node_modules out of its reach (requires --agent openai)",
+      "let the OpenAI agent explore the current directory while it compiles the plan: quick " +
+        "list_dir/read_file checks plus an explore subagent that does file-heavy digging in its own " +
+        "context so the planner's context stays clean; the ignore list keeps hidden files and " +
+        "node_modules out of its reach (requires --agent openai)",
     )
     .option(
       "--no-anim",
@@ -348,8 +350,10 @@ async function compilePlan(
   const anim: boolean | undefined = noAnim ? false : undefined;
 
   // --no-blind upgrades the OpenAI agent to the "deep" agent, which may
-  // explore the current directory (list_dir/read_file, sandboxed by the
-  // ignore list) while it is coming up with the DAG plan.
+  // explore the current directory while it is coming up with the DAG plan:
+  // direct list_dir/read_file (sandboxed by the ignore list) plus an explore
+  // subagent that does file-heavy digging in its own context and returns
+  // only a short findings report, keeping the planner's context clean.
   let agent: OpenAiAgent;
   let feedback: PlanningFeedback | null = null;
   if (agentOpts.agent === "mock") {
@@ -363,7 +367,8 @@ async function compilePlan(
   }
   if (noBlind) {
     console.log(
-      `openwebqa: exploration enabled (root: ${process.cwd()}, ignore: ${DEFAULT_IGNORE_LIST.join(", ")})`,
+      `openwebqa: exploration enabled (root: ${process.cwd()}, ignore: ${DEFAULT_IGNORE_LIST.join(", ")}; ` +
+        `file-heavy questions are delegated to explore subagents)`,
     );
   }
 

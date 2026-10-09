@@ -5,7 +5,7 @@ A Node.js CLI that turns a markdown QA test plan into a directed acyclic graph o
 ## Features
 
 - Compiles a markdown plan into a DAG of test cases using an OpenAI agent or a deterministic offline mock agent.
-- With `--no-blind`, the plan step runs a "deep" agent that can explore the current directory (list_dir/read_file) while compiling the DAG; a sandbox and ignore list (hidden files, node_modules) keep unexposed files out of reach.
+- With `--no-blind`, the plan step runs a "deep" agent that can explore the current directory while compiling the DAG: direct list_dir/read_file checks plus an `explore` tool that delegates file-heavy questions to exploration subagents, which read in their own context and return only a short, byte-capped findings report, keeping the planner's context clean; a sandbox and ignore list (hidden files, node_modules) keep unexposed files out of reach of both.
 - Shows animated planning feedback on stderr while the AI compiles the plan (spinner + elapsed time, in-place on a TTY, plain lines when piped), printing each deep-agent exploration command inline and finalizing it in place with a one-line result summary.
 - Supports OpenAI-compatible endpoints, including local models like Ollama and LM Studio, via a custom base URL.
 - Validates the graph, detecting circular dependencies and unknown case references.
