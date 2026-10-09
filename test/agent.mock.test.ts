@@ -168,6 +168,94 @@ describe("createMockAgent", () => {
   });
 });
 
+describe("parity extensions (optional fields the OpenAI agent can set in JSON)", () => {
+  it("parses waitForSelector with an optional trailing timeout (selector may contain spaces)", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      [
+        "## waits",
+        "- waitForSelector .plain",
+        "- waitForSelector .timed 5000",
+        "- waitForSelector div > p 250",
+        "- waitForSelector #posts article:nth-of-type(2)",
+        "- waitForSelector .weird token",
+      ].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([
+      { type: "waitForSelector", selector: ".plain" },
+      { type: "waitForSelector", selector: ".timed", timeout: 5000 },
+      { type: "waitForSelector", selector: "div > p", timeout: 250 },
+      { type: "waitForSelector", selector: "#posts article:nth-of-type(2)" },
+      // A final token that is not a non-negative number stays part of the selector.
+      { type: "waitForSelector", selector: ".weird token" },
+    ]);
+  });
+
+  it("parses screenshot with an optional trailing path (path may contain spaces)", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      [
+        "## shots",
+        "- screenshot",
+        "- screenshot shot-out/step.png",
+        "- screenshot my shots/a b.png",
+      ].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([
+      { type: "screenshot" },
+      { type: "screenshot", path: "shot-out/step.png" },
+      { type: "screenshot", path: "my shots/a b.png" },
+    ]);
+  });
+
+  it("parses assertUrlPartial as a partial assertUrl and rejects a bare bullet", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      ["## urls", "- assertUrl https://example.com/full", "- assertUrlPartial /dash"].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([
+      { type: "assertUrl", url: "https://example.com/full" },
+      { type: "assertUrl", url: "/dash", partial: true },
+    ]);
+    await expect(agent.run("## a\n- assertUrlPartial\n")).rejects.toThrow(
+      /bullet "- assertUrlPartial".*missing its argument/,
+    );
+  });
+
+  it("parses a case-level timeout bullet into timeoutMs (not an action; last one wins)", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      [
+        "## timed case",
+        "- timeout 12345",
+        "- goto https://example.com",
+        "- timeout 999",
+      ].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([{ type: "goto", url: "https://example.com" }]);
+    expect(graph.cases[0].timeoutMs).toBe(999);
+  });
+
+  it("omits timeoutMs entirely when no timeout bullet is present", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run("## plain\n- wait 1\n");
+    expect(graph.cases[0]).not.toHaveProperty("timeoutMs");
+  });
+
+  it("throws when the timeout bullet is missing its argument or not a non-negative number", async () => {
+    const agent = createMockAgent();
+    await expect(agent.run("## a\n- timeout\n")).rejects.toThrow(
+      /bullet "- timeout".*missing its argument/,
+    );
+    await expect(agent.run("## a\n- timeout abc\n")).rejects.toThrow(
+      /ms must be a non-negative number/,
+    );
+    await expect(agent.run("## a\n- timeout -5\n")).rejects.toThrow(
+      /ms must be a non-negative number/,
+    );
+  });
+});
+
 describe("slugify", () => {
   it("kebab-cases headings", () => {
     expect(slugify("Smoke the login flow")).toBe("smoke-the-login-flow");

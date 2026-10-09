@@ -21,13 +21,21 @@ import type { Action, TestCase, TestPlanGraph } from "../graph/types";
  *                                        may be a {{credential:<id>.username|password}}
  *                                        placeholder that the CLI resolves before execution)
  *       - press <key>
- *       - waitForSelector <selector>
+ *       - waitForSelector <selector> [ms] (selector = rest of the line, which may contain
+ *                                          spaces; when the FINAL token is a non-negative
+ *                                          number it is the timeout in ms instead)
  *       - wait <ms>                      (non-negative number)
- *       - screenshot
- *       - assertUrl <url>
+ *       - screenshot [path]              (path = rest of the line, may contain spaces; with
+ *                                        a path the image is saved to that file, without
+ *                                        one the capture is discarded)
+ *       - assertUrl <url>                (exact match against the current URL)
+ *       - assertUrlPartial <url>         (substring match against the current URL)
  *       - assertText <selector> <text>   (text = rest of the line; may contain spaces)
  *       - evaluate <expression>          (expression = rest of the line; may contain spaces)
  *       - depends <id1>, <id2>, ...      (populates the case's dependsOn)
+ *       - timeout <ms>                   (non-negative number; case-level like depends — not
+ *                                        an action, may appear anywhere in the section, last
+ *                                        bullet wins; sets the case's timeoutMs)
  *   - Everything else (prose, non-"- " lines, unknown bullet keywords,
  *     bullets before the first heading) is ignored.
  *   - A recognized keyword missing its argument (e.g. "- goto" with no URL,
@@ -74,10 +82,31 @@ function requireRest(rest: string, keyword: string, section: string): string {
   return rest;
 }
 
-/** Parse the "- " bullets of one section into actions plus dependsOn. */
-function parseSection(lines: string[], section: string): { actions: Action[]; dependsOn: string[] } {
+/**
+ * Split the rest of a "- waitForSelector" bullet into [selector, timeout?].
+ * When the FINAL whitespace-separated token is a non-negative number it is
+ * the timeout in ms and the selector is everything before it (selectors may
+ * contain spaces, e.g. "div > p"); otherwise the entire rest is the selector.
+ */
+function splitTrailingMs(rest: string): { selector: string; ms?: number } {
+  const tokens = rest.split(/\s+/);
+  if (tokens.length >= 2) {
+    const ms = Number(tokens[tokens.length - 1]);
+    if (Number.isFinite(ms) && ms >= 0) {
+      return { selector: tokens.slice(0, -1).join(" "), ms };
+    }
+  }
+  return { selector: rest };
+}
+
+/** Parse the "- " bullets of one section into actions, dependsOn, and timeoutMs. */
+function parseSection(
+  lines: string[],
+  section: string,
+): { actions: Action[]; dependsOn: string[]; timeoutMs?: number } {
   const actions: Action[] = [];
   let dependsOn: string[] = [];
+  let timeoutMs: number | undefined;
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -107,6 +136,18 @@ function parseSection(lines: string[], section: string): { actions: Action[]; de
       continue;
     }
 
+    if (keyword === "timeout") {
+      const msRaw = requireRest(rest, "timeout", section);
+      const ms = Number(msRaw);
+      if (!Number.isFinite(ms) || ms < 0) {
+        throw new Error(
+          `mock agent: bullet "- timeout ${msRaw}" in section "${section}": ms must be a non-negative number`,
+        );
+      }
+      timeoutMs = ms; // a later "- timeout" bullet overrides an earlier one
+      continue;
+    }
+
     switch (keyword) {
       case "goto": {
         actions.push({ type: "goto", url: requireRest(rest, "goto", section) });
@@ -126,7 +167,10 @@ function parseSection(lines: string[], section: string): { actions: Action[]; de
         break;
       }
       case "waitForSelector": {
-        actions.push({ type: "waitForSelector", selector: requireRest(rest, "waitForSelector", section) });
+        const { selector, ms } = splitTrailingMs(requireRest(rest, "waitForSelector", section));
+        const action: Action =
+          ms !== undefined ? { type: "waitForSelector", selector, timeout: ms } : { type: "waitForSelector", selector };
+        actions.push(action);
         break;
       }
       case "wait": {
@@ -141,13 +185,17 @@ function parseSection(lines: string[], section: string): { actions: Action[]; de
         break;
       }
       case "screenshot": {
-        // Grammar is the bare "- screenshot"; a line with trailing text is
-        // not a known bullet and is ignored.
-        if (rest.length === 0) actions.push({ type: "screenshot" });
+        // Grammar is "- screenshot [path]"; path = the rest of the line (may
+        // contain spaces). Without a path the capture is discarded.
+        actions.push(rest.length > 0 ? { type: "screenshot", path: rest } : { type: "screenshot" });
         break;
       }
       case "assertUrl": {
         actions.push({ type: "assertUrl", url: requireRest(rest, "assertUrl", section) });
+        break;
+      }
+      case "assertUrlPartial": {
+        actions.push({ type: "assertUrl", url: requireRest(rest, "assertUrlPartial", section), partial: true });
         break;
       }
       case "assertText": {
@@ -165,7 +213,7 @@ function parseSection(lines: string[], section: string): { actions: Action[]; de
     }
   }
 
-  return { actions, dependsOn };
+  return { actions, dependsOn, timeoutMs };
 }
 
 function buildCase(
@@ -185,8 +233,12 @@ function buildCase(
     );
   }
   seenIds.add(id);
-  const { actions, dependsOn } = parseSection(lines, heading);
-  return { id, name: heading, dependsOn, actions };
+  const { actions, dependsOn, timeoutMs } = parseSection(lines, heading);
+  const testCase: TestCase = { id, name: heading, dependsOn, actions };
+  if (timeoutMs !== undefined) {
+    testCase.timeoutMs = timeoutMs;
+  }
+  return testCase;
 }
 
 /**

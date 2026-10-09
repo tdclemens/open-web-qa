@@ -41,7 +41,11 @@ export interface WaitAction {
   ms: number;
 }
 
-/** Capture a screenshot; optional target path (otherwise a generated path is used). */
+/**
+ * Capture a screenshot. With `path`, the image is saved to that file;
+ * without it the capture is discarded (it still doubles as a render-stability
+ * wait). Failure screenshots are saved separately by the runner.
+ */
 export interface ScreenshotAction {
   type: "screenshot";
   path?: string;

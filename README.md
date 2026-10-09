@@ -296,8 +296,15 @@ With `--agent mock`, the plan uses a fixed grammar:
 ```
 
 Actions: `goto`, `click`, `fill`, `press`, `waitForSelector`, `wait`, `screenshot`,
-`assertUrl`, `assertText`, and `evaluate`. Dependencies between cases are
-declared with a `depends <id1>, <id2>, ...` action.
+`assertUrl`, `assertUrlPartial`, `assertText`, and `evaluate`. Two actions take an
+optional trailing argument: `waitForSelector <selector> [ms]` (the final token is
+the timeout in milliseconds when it is a non-negative number; the selector may
+itself contain spaces) and `screenshot [path]` (save the capture to that file
+instead of discarding it). `assertUrl` matches the full URL; `assertUrlPartial`
+matches a substring.
+Dependencies between cases are declared with a `depends <id1>, <id2>, ...` bullet,
+and a case's overall timeout can be overridden with a case-level `timeout <ms>`
+bullet (last one wins; otherwise the `--timeout` default applies).
 
 The text of a `fill`/`assertText` action may include a
 `{{credential:<id>.username}}` or `{{credential:<id>.password}}` placeholder;
