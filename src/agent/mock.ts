@@ -36,6 +36,9 @@ import type { Action, TestCase, TestPlanGraph } from "../graph/types";
  *       - timeout <ms>                   (non-negative number; case-level like depends — not
  *                                        an action, may appear anywhere in the section, last
  *                                        bullet wins; sets the case's timeoutMs)
+ *       - retries <n>                    (non-negative integer; case-level like timeout — not
+ *                                        an action, may appear anywhere in the section, last
+ *                                        bullet wins; sets the case's retries)
  *   - Everything else (prose, non-"- " lines, unknown bullet keywords,
  *     bullets before the first heading) is ignored.
  *   - A recognized keyword missing its argument (e.g. "- goto" with no URL,
@@ -99,14 +102,15 @@ function splitTrailingMs(rest: string): { selector: string; ms?: number } {
   return { selector: rest };
 }
 
-/** Parse the "- " bullets of one section into actions, dependsOn, and timeoutMs. */
+/** Parse the "- " bullets of one section into actions, dependsOn, timeoutMs, and retries. */
 function parseSection(
   lines: string[],
   section: string,
-): { actions: Action[]; dependsOn: string[]; timeoutMs?: number } {
+): { actions: Action[]; dependsOn: string[]; timeoutMs?: number; retries?: number } {
   const actions: Action[] = [];
   let dependsOn: string[] = [];
   let timeoutMs: number | undefined;
+  let retries: number | undefined;
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -145,6 +149,18 @@ function parseSection(
         );
       }
       timeoutMs = ms; // a later "- timeout" bullet overrides an earlier one
+      continue;
+    }
+
+    if (keyword === "retries") {
+      const nRaw = requireRest(rest, "retries", section);
+      const n = Number(nRaw);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+        throw new Error(
+          `mock agent: bullet "- retries ${nRaw}" in section "${section}": n must be a non-negative integer`,
+        );
+      }
+      retries = n; // a later "- retries" bullet overrides an earlier one
       continue;
     }
 
@@ -213,7 +229,7 @@ function parseSection(
     }
   }
 
-  return { actions, dependsOn, timeoutMs };
+  return { actions, dependsOn, timeoutMs, retries };
 }
 
 function buildCase(
@@ -233,10 +249,13 @@ function buildCase(
     );
   }
   seenIds.add(id);
-  const { actions, dependsOn, timeoutMs } = parseSection(lines, heading);
+  const { actions, dependsOn, timeoutMs, retries } = parseSection(lines, heading);
   const testCase: TestCase = { id, name: heading, dependsOn, actions };
   if (timeoutMs !== undefined) {
     testCase.timeoutMs = timeoutMs;
+  }
+  if (retries !== undefined) {
+    testCase.retries = retries;
   }
   return testCase;
 }
