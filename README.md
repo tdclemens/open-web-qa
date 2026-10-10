@@ -56,6 +56,7 @@ below notes which mode each option applies to. Full lists: `openwebqa --help`,
 | `--api-key <key>` | root .md, `compile` | API key for the endpoint. Falls back to `OPENAI_API_KEY`, then `not-needed` for keyless local servers |
 | `--workers <n>` | root, `run` | Max test cases running in parallel. Default 4 |
 | `--timeout <ms>` | root, `run` | Per-case timeout. Default 30000 |
+| `--retries <n>` | root, `run` | Number of times to retry a test case that fails (each retry in a fresh browser context). Default 0; a case can override it with a per-case `retries` field |
 | `--headful` | root, `run` | Run the browser visibly instead of headless |
 | `--no-blind` | root .md, `compile` | Let the agent explore the current directory while it compiles the plan (file-heavy digging via explore subagents, to keep the planner's context clean) — see [Plan-time exploration](#plan-time-exploration). Requires `--agent openai`. |
 | `--no-anim` | root .md, `compile` | Disable the animated planning feedback; print plain status lines instead. `OPENWEBQA_NO_ANIM=1` does the same |
@@ -107,8 +108,8 @@ openwebqa run sample-plan.json
 
 - The JSON file is the exact `TestPlanGraph` shape: a `cases` array whose
   entries have `id`, `name`, `dependsOn`, an `actions` array built from the
-  action types in the Plan format section below, and an optional `timeoutMs`.
-  It is pretty-printed so diffs in review are readable.
+  action types in the Plan format section below, an optional `timeoutMs`, and
+  an optional `retries`. It is pretty-printed so diffs in review are readable.
 - `run` validates the saved file before any browser work. Structurally: it
   must be well-formed JSON with the right shape. Semantically: no duplicate
   ids, unknown case references, unknown action types, or circular
@@ -303,8 +304,10 @@ itself contain spaces) and `screenshot [path]` (save the capture to that file
 instead of discarding it). `assertUrl` matches the full URL; `assertUrlPartial`
 matches a substring.
 Dependencies between cases are declared with a `depends <id1>, <id2>, ...` bullet,
-and a case's overall timeout can be overridden with a case-level `timeout <ms>`
-bullet (last one wins; otherwise the `--timeout` default applies).
+a case's overall timeout can be overridden with a case-level `timeout <ms>`
+bullet (last one wins; otherwise the `--timeout` default applies), and a case's
+retry count can be overridden the same way with a case-level `retries <n>`
+bullet (last one wins; otherwise the `--retries` default applies).
 
 The text of a `fill`/`assertText` action may include a
 `{{credential:<id>.username}}` or `{{credential:<id>.password}}` placeholder;
@@ -335,8 +338,11 @@ Total 3 | passed 2 | failed 1 | skipped 0 | elapsed 0.95s
 
 Case results stream live: each `PASS`/`FAIL`/`SKIP` line is printed as soon as
 its case settles (cascade skips print the moment they are decided), so in
-parallel runs the lines appear in completion order, not plan order. Only the
-final `Total ...` line waits for the whole run to finish.
+parallel runs the lines appear in completion order, not plan order. When a case
+needed one or more retries, the line ends with ` | attempts: <n>` — the total
+attempts, e.g. `PASS submit-form Submit form (305ms) | attempts: 2` — for both
+passed and failed cases. Only the final `Total ...` line waits for the whole
+run to finish.
 
 Exit codes: `0` = no failed cases, skips don't count. `1` = one or more
 failures or a runtime error. `2` = bad usage, unreadable plan, or graph
