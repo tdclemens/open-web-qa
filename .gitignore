@@ -4,3 +4,6 @@ openwebqa-results
 .openwebqa/
 !examples/.openwebqa/
 !examples/.openwebqa/credentials.json
+
+# husky v9+ generated dir (self-ignored via .husky/_/.gitignore)
+.husky/_/
