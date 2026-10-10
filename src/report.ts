@@ -22,7 +22,10 @@ function singleLine(text: string): string {
  *     `<PASS|FAIL|SKIP> <id> <name> (<durationMs>ms)`
  * For failed cases, the error message (if any) is appended as
  * `error: <message>`, followed by ` | screenshot: <path>` when a screenshot
- * path is present. Always exactly one line (multi-line errors are flattened),
+ * path is present. When a case needed one or more retries, the attempt count
+ * is appended last as ` | attempts: <n>` (e.g.
+ * `PASS a login (123ms) | attempts: 2`), shown for both passed and failed
+ * results. Always exactly one line (multi-line errors are flattened),
  * which keeps streamed per-case output readable.
  */
 export function formatCaseLine(result: CaseResult): string {
@@ -34,6 +37,9 @@ export function formatCaseLine(result: CaseResult): string {
     if (result.screenshotPath !== undefined) {
       line += ` | screenshot: ${singleLine(result.screenshotPath)}`;
     }
+  }
+  if (result.attempts !== undefined) {
+    line += ` | attempts: ${result.attempts}`;
   }
   return line;
 }
