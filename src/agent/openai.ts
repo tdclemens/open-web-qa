@@ -201,6 +201,12 @@ function validateCase(value: unknown, index: number): TestCase {
   if (obj.timeoutMs !== undefined && typeof obj.timeoutMs !== "number") {
     throw new TypeError(`extractJson: invalid case "${caseId}": "timeoutMs" must be a number when present`);
   }
+  if (
+    obj.retries !== undefined &&
+    !(typeof obj.retries === "number" && Number.isInteger(obj.retries) && obj.retries >= 0)
+  ) {
+    throw new TypeError(`extractJson: invalid case "${caseId}": "retries" must be a non-negative integer when present`);
+  }
   const actions = (obj.actions as unknown[]).map((a, j) => validateAction(a, caseId, j));
   const testCase: TestCase = {
     id: caseId,
@@ -210,6 +216,9 @@ function validateCase(value: unknown, index: number): TestCase {
   };
   if (typeof obj.timeoutMs === "number") {
     testCase.timeoutMs = obj.timeoutMs;
+  }
+  if (typeof obj.retries === "number" && Number.isInteger(obj.retries) && obj.retries >= 0) {
+    testCase.retries = obj.retries;
   }
   return testCase;
 }
