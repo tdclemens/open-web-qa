@@ -14,6 +14,7 @@
     "setup:deps": "npx playwright install-deps chromium",
     "build": "tsc && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test": "vitest run"
   },
   "engines": {
@@ -27,8 +28,11 @@
     "playwright": "^1.49.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.9.0",
+    "eslint": "^10.12.0",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.71.1",
     "vitest": "^2.1.8"
   }
 }
