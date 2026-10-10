@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -288,4 +290,171 @@ describe("runGraph", () => {
       runGraph(graph, { resultsDir: path.join(resultsDir, "cyc") })
     ).rejects.toThrow("circular dependency detected");
   });
+
+  it("a flaky case passes after a retry and its dependents still run", async () => {
+    // The first request to /flaky serves a failing page; later requests serve
+    // a passing one, so the case only settles green on its second attempt.
+    let flakyRequests = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/flaky") {
+        flakyRequests += 1;
+        res.setHeader("content-type", "text/html");
+        res.end(flakyRequests === 1 ? '<div id="out">first</div>' : '<div id="out">second</div>');
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const graph: TestPlanGraph = {
+        cases: [
+          {
+            id: "flaky",
+            name: "flaky case",
+            dependsOn: [],
+            retries: 2,
+            timeoutMs: 2000,
+            actions: [
+              { type: "goto", url: `http://127.0.0.1:${port}/flaky` },
+              { type: "assertText", selector: "#out", text: "second" },
+            ],
+          },
+          {
+            id: "dep",
+            name: "depends on the flaky case",
+            dependsOn: ["flaky"],
+            actions: [{ type: "goto", url: pageUrl }],
+          },
+        ],
+      };
+
+      const report = await runGraph(graph, {
+        workers: 2,
+        headless: true,
+        resultsDir: path.join(resultsDir, "retry-flaky"),
+      });
+
+      const byId = new Map(report.results.map((r) => [r.id, r]));
+      const flaky = byId.get("flaky")!;
+      expect(flaky.status).toBe("passed");
+      expect(flaky.attempts).toBe(2);
+      expect(flaky.error).toBeUndefined();
+      expect(byId.get("dep")?.status).toBe("passed");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 60000);
+
+  it("an always-failing case exhausts retries and reports attempts", async () => {
+    const report = await runGraph(
+      {
+        cases: [
+          {
+            id: "doomed",
+            name: "always fails",
+            dependsOn: [],
+            timeoutMs: 1000,
+            actions: [{ type: "goto", url: pageUrl }, { type: "click", selector: "#missing" }],
+          },
+        ],
+      },
+      {
+        headless: true,
+        retries: 2,
+        resultsDir: path.join(resultsDir, "retry-exhaust"),
+      }
+    );
+
+    const doomed = report.results[0]!;
+    expect(doomed.status).toBe("failed");
+    expect(doomed.attempts).toBe(3);
+    expect(doomed.screenshotPath).toBe(path.join(resultsDir, "retry-exhaust", "doomed.png"));
+    expect(fs.existsSync(doomed.screenshotPath!)).toBe(true);
+  }, 60000);
+
+  it("a case settling on its first try has no attempts field", async () => {
+    const report = await runGraph(
+      {
+        cases: [
+          {
+            id: "first-try",
+            name: "passes immediately",
+            dependsOn: [],
+            actions: [{ type: "goto", url: pageUrl }],
+          },
+        ],
+      },
+      {
+        headless: true,
+        resultsDir: path.join(resultsDir, "retry-none"),
+      }
+    );
+
+    const firstTry = report.results[0]!;
+    expect(firstTry.status).toBe("passed");
+    expect(firstTry.attempts).toBeUndefined();
+  }, 60000);
+
+  it("onCaseSettled fires once per case even when retried", async () => {
+    let flakyRequests = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/flaky") {
+        flakyRequests += 1;
+        res.setHeader("content-type", "text/html");
+        res.end(flakyRequests === 1 ? '<div id="out">first</div>' : '<div id="out">second</div>');
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const settled: CaseResult[] = [];
+      const graph: TestPlanGraph = {
+        cases: [
+          {
+            id: "flaky",
+            name: "flaky case",
+            dependsOn: [],
+            retries: 2,
+            timeoutMs: 2000,
+            actions: [
+              { type: "goto", url: `http://127.0.0.1:${port}/flaky` },
+              { type: "assertText", selector: "#out", text: "second" },
+            ],
+          },
+          {
+            id: "dep",
+            name: "depends on the flaky case",
+            dependsOn: ["flaky"],
+            actions: [{ type: "goto", url: pageUrl }],
+          },
+        ],
+      };
+
+      const report = await runGraph(graph, {
+        workers: 2,
+        headless: true,
+        resultsDir: path.join(resultsDir, "retry-settled"),
+        onCaseSettled: (result) => settled.push(result),
+      });
+
+      // Exactly one settled result per case id, and it is the final result
+      // object that ends up in the report.
+      const countsById = new Map<string, number>();
+      for (const r of settled) countsById.set(r.id, (countsById.get(r.id) ?? 0) + 1);
+      expect(settled).toHaveLength(2);
+      expect(countsById.get("flaky")).toBe(1);
+      expect(countsById.get("dep")).toBe(1);
+      const byId = new Map(report.results.map((r) => [r.id, r]));
+      expect(settled.find((r) => r.id === "flaky")).toBe(byId.get("flaky"));
+      expect(settled.find((r) => r.id === "dep")).toBe(byId.get("dep"));
+      expect(byId.get("flaky")?.attempts).toBe(2);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 60000);
 });
