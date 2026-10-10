@@ -254,6 +254,56 @@ describe("parity extensions (optional fields the OpenAI agent can set in JSON)",
       /ms must be a non-negative number/,
     );
   });
+
+  it("parses a case-level retries bullet into retries (not an action)", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      [
+        "## retried case",
+        "- retries 2",
+        "- goto https://example.com",
+        "- click #submit",
+      ].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([
+      { type: "goto", url: "https://example.com" },
+      { type: "click", selector: "#submit" },
+    ]);
+    expect(graph.cases[0].retries).toBe(2);
+  });
+
+  it("applies last-retries-bullet-wins when multiple retries bullets are present", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run(
+      [
+        "## retried case",
+        "- retries 1",
+        "- goto https://example.com",
+        "- retries 3",
+      ].join("\n"),
+    );
+    expect(graph.cases[0].actions).toEqual([{ type: "goto", url: "https://example.com" }]);
+    expect(graph.cases[0].retries).toBe(3);
+  });
+
+  it("omits retries entirely when no retries bullet is present", async () => {
+    const agent = createMockAgent();
+    const graph = await agent.run("## plain\n- wait 1\n");
+    expect(graph.cases[0]).not.toHaveProperty("retries");
+  });
+
+  it("throws when the retries bullet is missing its argument or not a non-negative integer", async () => {
+    const agent = createMockAgent();
+    await expect(agent.run("## a\n- retries\n")).rejects.toThrow(
+      /bullet "- retries".*missing its argument/,
+    );
+    await expect(agent.run("## a\n- retries x\n")).rejects.toThrow(
+      /n must be a non-negative integer/,
+    );
+    await expect(agent.run("## a\n- retries -1\n")).rejects.toThrow(
+      /n must be a non-negative integer/,
+    );
+  });
 });
 
 describe("slugify", () => {
