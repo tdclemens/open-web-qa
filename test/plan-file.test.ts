@@ -152,6 +152,33 @@ describe("parsePlanText", () => {
     expect(parseOk({ cases: [{ id: "a", name: "A", dependsOn: [], actions: [] }] }).cases[0].timeoutMs).toBeUndefined();
   });
 
+  it.each([
+    ["string retries", "2"],
+    ["negative retries", -1],
+    ["fractional retries", 1.5],
+  ])("throws when retries is %s", (_label, raw) => {
+    expect(() =>
+      parseOk({
+        cases: [{ id: "a", name: "A", dependsOn: [], actions: [], retries: raw }],
+      }),
+    ).toThrow(PlanFileError);
+    expect(() =>
+      parseOk({
+        cases: [{ id: "a", name: "A", dependsOn: [], actions: [], retries: raw }],
+      }),
+    ).toThrow(/"retries" must be a non-negative integer/);
+  });
+
+  it("accepts retries 0 and retries 2, and leaves retries undefined when the field is absent", () => {
+    expect(parseOk({ cases: [{ id: "a", name: "A", dependsOn: [], actions: [], retries: 2 }] }).cases[0].retries).toBe(
+      2,
+    );
+    expect(parseOk({ cases: [{ id: "a", name: "A", dependsOn: [], actions: [], retries: 0 }] }).cases[0].retries).toBe(
+      0,
+    );
+    expect(parseOk({ cases: [{ id: "a", name: "A", dependsOn: [], actions: [] }] }).cases[0].retries).toBeUndefined();
+  });
+
   it("does not check action types or required fields (validateGraph's job)", () => {
     // Shape-valid (an object with a string type) but semantically wrong.
     const graph = parseOk({
