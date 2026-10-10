@@ -96,6 +96,34 @@ describe("extractJson", () => {
     const badActions = '{"cases":[{"id":"a","name":"A","dependsOn":[],"actions":"goto"}]}';
     expect(() => extractJson(badActions)).toThrow(/"actions" must be an array/);
   });
+
+  it("copies the optional per-case retries field onto the returned case", () => {
+    const text =
+      '{"cases":[{"id":"a","name":"A","dependsOn":[],"actions":[],"retries":2}]}';
+    const graph = extractJson(text);
+    expect(graph.cases[0].retries).toBe(2);
+  });
+
+  it("leaves retries undefined when the field is absent", () => {
+    const text = '{"cases":[{"id":"a","name":"A","dependsOn":[],"actions":[]}]}';
+    const graph = extractJson(text);
+    expect(graph.cases[0].retries).toBeUndefined();
+  });
+
+  it("throws TypeError when retries is not a non-negative integer", () => {
+    // string instead of number
+    const withString =
+      '{"cases":[{"id":"a","name":"A","dependsOn":[],"actions":[],"retries":"2"}]}';
+    expect(() => extractJson(withString)).toThrow(/"retries" must be a non-negative integer/);
+    // negative integer
+    const withNegative =
+      '{"cases":[{"id":"a","name":"A","dependsOn":[],"actions":[],"retries":-1}]}';
+    expect(() => extractJson(withNegative)).toThrow(/"retries" must be a non-negative integer/);
+    // non-integer number
+    const withFraction =
+      '{"cases":[{"id":"a","name":"A","dependsOn":[],"actions":[],"retries":1.5}]}';
+    expect(() => extractJson(withFraction)).toThrow(/"retries" must be a non-negative integer/);
+  });
 });
 
 describe("createOpenAiAgent with a custom OpenAI-compatible endpoint", () => {
