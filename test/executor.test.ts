@@ -168,7 +168,6 @@ describe("runGraph", () => {
   it("streams results via onCaseSettled as cases settle, before the run resolves", async () => {
     const settled: CaseResult[] = [];
     const settledAtById = new Map<string, number>();
-    let resolvedAt = 0;
     const graph: TestPlanGraph = {
       cases: [
         {
@@ -194,7 +193,7 @@ describe("runGraph", () => {
         settledAtById.set(result.id, Date.now());
       },
     });
-    resolvedAt = Date.now();
+    const resolvedAt = Date.now();
 
     // One callback per case, in completion order (not input/report order).
     expect(settled.map((r) => r.id)).toEqual(["early", "late"]);
