@@ -92,6 +92,18 @@ function addExecOptions(cmd: Command): Command {
       },
       30000,
     )
+    .option(
+      "--retries <n>",
+      'number of times to retry a test case that fails (default 0; a case can override it with a per-case "retries" in the plan)',
+      (value: string) => {
+        const n = Number.parseInt(value, 10);
+        if (!Number.isInteger(n) || n < 0) {
+          throw new InvalidArgumentError("must be a non-negative integer");
+        }
+        return n;
+      },
+      0,
+    )
     .option("--headful", "run the browser headful (visible) instead of headless")
     .option(
       "--base-url <url>",
@@ -227,6 +239,7 @@ interface AgentOpts {
 interface ExecOpts {
   workers: number;
   timeout: number;
+  retries: number;
   headful: boolean;
   baseUrl?: string;
   resultsDir: string;
@@ -247,6 +260,7 @@ function execOptsOf(opts: Record<string, unknown>): ExecOpts {
   return {
     workers: opts.workers as number,
     timeout: opts.timeout as number,
+    retries: opts.retries as number,
     headful: opts.headful as boolean,
     baseUrl: opts.baseUrl as string | undefined,
     resultsDir: opts.resultsDir as string,
@@ -432,6 +446,7 @@ async function executeGraph(graph: TestPlanGraph, exec: ExecOpts): Promise<void>
     workers: exec.workers,
     headless: !exec.headful,
     timeoutMs: exec.timeout,
+    retries: exec.retries,
     resultsDir: exec.resultsDir,
     onCaseSettled: (result) => console.log(formatCaseLine(result)),
   });
