@@ -370,20 +370,22 @@ function visibleLines(
   while (i < out.length) {
     const ch = out[i];
     if (ch === "\x1b") {
-      const m = /^\x1b\[(\d*)([A-Z])/.exec(out.slice(i));
+      // ESC itself is matched by the string comparison above (no-control-regex
+      // forbids it in the pattern); the rest of the CSI sequence is matched here.
+      const m = /^\[(\d*)([A-Z])/.exec(out.slice(i + 1));
       if (!m) {
         i++;
         continue;
       }
       if (ignored.has(m[2])) {
-        i += m[0].length; // dropped by the terminal
+        i += 1 + m[0].length; // dropped by the terminal (ESC + sequence)
         continue;
       }
       const p = m[1] === "" ? 1 : parseInt(m[1], 10);
       if (m[2] === "A") r = Math.max(0, r - p); // 0 => no-op, column preserved
       else if (m[2] === "K") for (let x = c; x < cols; x++) grid[r][x] = " ";
       else if (m[2] === "G") c = Math.max(0, p - 1);
-      i += m[0].length;
+      i += 1 + m[0].length; // skip ESC + sequence
       continue;
     }
     if (ch === "\n") {

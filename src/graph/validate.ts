@@ -4,7 +4,7 @@
 // TestPlanGraph, but at runtime it comes from parsed agent JSON, so every
 // access is defensive and type-checked dynamically.
 
-import type { Action, ActionType, TestPlanGraph } from "./types";
+import type { ActionType, TestPlanGraph } from "./types";
 
 /** Required fields per action discriminant (the `type` field itself is checked separately). */
 const REQUIRED_FIELDS: Record<ActionType, readonly string[]> = {
