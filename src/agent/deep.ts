@@ -188,7 +188,7 @@ async function realInsideRoot(
   rootDir: string,
   resolved: string,
 ): Promise<string> {
-  let real = resolved;
+  let real: string;
   try {
     real = await fs.promises.realpath(resolved);
   } catch {
@@ -761,7 +761,9 @@ export function createDeepAgent(options: DeepAgentOptions): OpenAiAgent {
         realRoot = await fs.promises.realpath(rootDir);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`deep agent: cannot resolve exploration root "${rootDir}": ${message}`);
+        throw new Error(`deep agent: cannot resolve exploration root "${rootDir}": ${message}`, {
+          cause: err,
+        });
       }
 
       // One loop breaker per run (see PlannerLoopBreaker): the planner loop
