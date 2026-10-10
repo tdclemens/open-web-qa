@@ -3,7 +3,7 @@
 // A saved plan is exactly the TestPlanGraph JSON shape that the agents
 // compile to (see types.ts):
 //
-//   { "cases": [ { "id", "name", "dependsOn", "actions", "timeoutMs"? } ] }
+//   { "cases": [ { "id", "name", "dependsOn", "actions", "timeoutMs"?, "retries"? } ] }
 //
 // These files are meant to be committed to the user's project and
 // hand-edited over time (see the `openwebqa compile` / `openwebqa run`
@@ -35,6 +35,7 @@ function caseRef(index: number, id: unknown): string {
  *  - every case is an object with a string `id`, a string `name`,
  *    a string array `dependsOn`, and an array `actions`;
  *  - a present `timeoutMs` is a finite, non-negative number;
+ *  - a present `retries` is a finite, non-negative integer;
  *  - every action is an object (its `type` and required fields are checked
  *    by validateGraph).
  *
@@ -86,6 +87,12 @@ export function parsePlanText(raw: string, source: string): TestPlanGraph {
       const t = rawCase.timeoutMs;
       if (typeof t !== "number" || !Number.isFinite(t) || t < 0) {
         throw new PlanFileError(`${source}: ${ref}: "timeoutMs" must be a non-negative number`);
+      }
+    }
+    if (rawCase.retries !== undefined) {
+      const r = rawCase.retries;
+      if (typeof r !== "number" || !Number.isFinite(r) || !Number.isInteger(r) || r < 0) {
+        throw new PlanFileError(`${source}: ${ref}: "retries" must be a non-negative integer`);
       }
     }
     rawCase.actions.forEach((action, j) => {
