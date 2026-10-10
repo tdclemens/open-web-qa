@@ -9,6 +9,11 @@
 //   are re-evaluated immediately.
 // - A semaphore caps the number of concurrently-running cases at
 //   `options.workers`; ready cases wait in a FIFO queue for a free slot.
+// - A failed case is re-executed up to its effective retry count
+//   (`case.retries ?? options.retries ?? 0`), each attempt in a fresh browser
+//   context. The case settles exactly once with the final result: 'passed' if
+//   any attempt passed, otherwise 'failed' (error and screenshot from the last
+//   attempt), with `attempts > 1` set on the result when retries were used.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -26,6 +31,8 @@ export interface RunnerOptions {
   timeoutMs?: number;
   /** Directory for failure screenshots, saved as `<resultsDir>/<caseId>.png`. Default: 'openwebqa-results'. */
   resultsDir?: string;
+  /** Number of times to retry a case that fails, each retry in a fresh browser context. Overridable per case via `TestCase.retries`. Default: 0 (no retries). */
+  retries?: number;
   /**
    * Called immediately (synchronously) when a case reaches a terminal
    * status — passed, failed, or skipped — in completion order, not at the
@@ -47,6 +54,14 @@ type InternalStatus = "pending" | "running" | "passed" | "failed" | "skipped";
  * browser context with a per-case timeout (`case.timeoutMs ??
  * options.timeoutMs`). On failure the case's error message is recorded and a
  * screenshot is saved to `<resultsDir>/<caseId>.png`.
+ *
+ * A failed case is retried up to its effective retry count
+ * (`tc.retries ?? (options.retries ?? 0)`), each attempt in a fresh browser
+ * context. The case settles exactly once, with the final result only: status
+ * 'passed' if any attempt passed, otherwise 'failed' with the error and
+ * screenshotPath from the last attempt. `durationMs` spans the first attempt's
+ * start to the final result, and `attempts` is set on the result only when
+ * more than one attempt was used (never on skipped cases).
  *
  * If `options.onCaseSettled` is provided it is invoked at the moment each
  * case settles (including cascade skips), so callers can stream results live;
@@ -179,23 +194,36 @@ export async function runGraph(graph: TestPlanGraph, options: RunnerOptions = {}
 
     const runCase = async (id: string): Promise<void> => {
       const tc = caseById.get(id)!;
+      // Effective retry count: per-case plan field wins over the runner option.
+      const maxAttempts = 1 + (tc.retries ?? (options.retries ?? 0));
       const startedAt = Date.now();
       statusById.set(id, "running");
       running += 1;
       try {
         let result: CaseResult;
-        try {
-          result = await launchCase(tc);
-        } catch (err) {
-          // Context/page creation failed; record the failure anyway.
-          result = {
-            id: tc.id,
-            name: tc.name,
-            status: "failed",
-            durationMs: Date.now() - startedAt,
-            error: err instanceof Error ? err.message : String(err),
-          };
+        let attemptsUsed = 0;
+        for (;;) {
+          attemptsUsed += 1;
+          try {
+            result = await launchCase(tc);
+          } catch (err) {
+            // Context/page creation failed; record the failure anyway.
+            result = {
+              id: tc.id,
+              name: tc.name,
+              status: "failed",
+              durationMs: Date.now() - startedAt,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+          if (result.status !== "failed" || attemptsUsed >= maxAttempts) break;
+          // Failed with retries remaining: run the case again in a fresh context.
         }
+        // The case settles exactly once with the final result: durationMs spans
+        // the first attempt's start to now; `attempts` only when > 1 (skipped
+        // cases never go through this path, so they never get `attempts`).
+        result.durationMs = Date.now() - startedAt;
+        if (attemptsUsed > 1) result.attempts = attemptsUsed;
         settle(id, result);
       } finally {
         running -= 1;
