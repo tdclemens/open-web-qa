@@ -105,6 +105,11 @@ export interface TestCase {
   actions: Action[];
   /** Overall timeout for this test case in milliseconds (optional). */
   timeoutMs?: number;
+  /**
+   * Number of times to retry this case after a failure, each retry in a fresh
+   * browser context (overrides the runner's `retries` option). Default: 0 (no retries).
+   */
+  retries?: number;
 }
 
 /** The directed acyclic graph of test cases returned by the AI agent. */
@@ -122,6 +127,11 @@ export interface CaseResult {
   durationMs: number;
   error?: string;
   screenshotPath?: string;
+  /**
+   * Number of times this case was executed. Present only when greater than 1
+   * (the case needed one or more retries).
+   */
+  attempts?: number;
 }
 
 /** Aggregate report for one run of a test plan graph. */
