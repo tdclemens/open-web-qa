@@ -251,7 +251,9 @@ export function extractJson(text: string): TestPlanGraph {
     parsed = JSON.parse(candidate);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    throw new TypeError(`extractJson: malformed JSON in model response: ${reason}`);
+    throw new TypeError(`extractJson: malformed JSON in model response: ${reason}`, {
+      cause: err,
+    });
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new TypeError("extractJson: invalid TestPlanGraph: expected an object with a \"cases\" array");
@@ -306,6 +308,7 @@ export async function runAgentRequest<T>(
   } catch (err) {
     throw new Error(
       `${requestLabel} request failed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
 }
