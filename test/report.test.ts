@@ -58,6 +58,36 @@ describe("formatCaseLine", () => {
       )
     ).toBe("SKIP c3 C (0ms)");
   });
+
+  it("appends the attempts suffix for a passed case that needed retries", () => {
+    expect(
+      formatCaseLine(makeResult({ id: "c1", name: "Login", durationMs: 120, attempts: 2 }))
+    ).toBe("PASS c1 Login (120ms) | attempts: 2");
+  });
+
+  it("puts the attempts suffix at the very end, after error and screenshot, for a failed case", () => {
+    expect(
+      formatCaseLine(
+        makeResult({
+          id: "c2",
+          name: "Checkout",
+          status: "failed",
+          durationMs: 456,
+          error: "Timeout 30000ms exceeded",
+          screenshotPath: "/tmp/shots/c2.png",
+          attempts: 3,
+        })
+      )
+    ).toBe(
+      "FAIL c2 Checkout (456ms) error: Timeout 30000ms exceeded | screenshot: /tmp/shots/c2.png | attempts: 3"
+    );
+  });
+
+  it("omits the attempts suffix when the result has no attempts field", () => {
+    const line = formatCaseLine(makeResult({ id: "c1", name: "Login", durationMs: 120 }));
+    expect(line).toBe("PASS c1 Login (120ms)");
+    expect(line).not.toContain("attempts");
+  });
 });
 
 describe("formatSummary", () => {
@@ -81,6 +111,21 @@ describe("formatSummary", () => {
     expect(formatSummary(makeReport([], 5, 5))).toBe(
       "Total 0 | passed 0 | failed 0 | skipped 0 | elapsed 0.00s"
     );
+  });
+
+  it("counts a case that passed after retries as passed and one that exhausted retries as failed", () => {
+    expect(
+      formatSummary(
+        makeReport(
+          [
+            makeResult({ id: "c1", name: "A", attempts: 2 }),
+            makeResult({ id: "c2", name: "B", status: "failed", error: "boom", attempts: 3 }),
+          ],
+          1000,
+          4000
+        )
+      )
+    ).toBe("Total 2 | passed 1 | failed 1 | skipped 0 | elapsed 3.00s");
   });
 });
 
