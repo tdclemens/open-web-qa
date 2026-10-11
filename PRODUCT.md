@@ -30,7 +30,7 @@ A Node.js CLI that turns a markdown QA test plan into a directed acyclic graph o
 
 ## Constraints
 
-- Requires Node.js version 18 or higher and runs in TypeScript compiled to JavaScript.
+- Requires Node.js version 22 or higher and runs in TypeScript compiled to JavaScript.
 - Depends on commander, openai, and playwright.
 - Uses headless Chromium by default; the headful option runs the browser visibly.
 - Build with `npm run build`, type-check with `npm run typecheck`, and test with `npm test`.
