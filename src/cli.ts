@@ -39,6 +39,7 @@ import { parsePlanText, PlanFileError } from "./graph/plan-file";
 import { runGraph } from "./executor/runner";
 import { exitCodeFor, formatCaseLine, formatSummary } from "./report";
 import type { TestPlanGraph } from "./graph/types";
+import { readVersion } from "./version";
 
 // --- Option groups (shared between the mode programs) ---
 
@@ -138,6 +139,7 @@ diffs and hand-edit the plan between runs. Passing a .json file to the root comm
 function buildRootCommand(): Command {
   const cmd = new Command();
   addAgentOptions(addExecOptions(cmd))
+    .version(readVersion(), "-v, --version", "print the current version")
     .option("--dry-run", "compile, validate, and print the execution levels, then exit without executing", false)
     .name("openwebqa")
     .description(
@@ -166,6 +168,7 @@ function buildRootCommand(): Command {
 function buildCompileCommand(): Command {
   const cmd = new Command();
   addAgentOptions(cmd)
+    .version(readVersion(), "-v, --version", "print the current version")
     .name("openwebqa compile")
     .description("compile a markdown QA plan into a JSON plan file: validate the DAG and save it, without executing")
     .argument("<plan-file>", "path to the markdown QA test plan")
@@ -192,6 +195,7 @@ function buildCompileCommand(): Command {
 function buildRunCommand(): Command {
   const cmd = new Command();
   addExecOptions(cmd)
+    .version(readVersion(), "-v, --version", "print the current version")
     .option("--dry-run", "validate and print the execution levels, then exit without executing", false)
     .name("openwebqa run")
     .description("validate and execute a saved JSON plan file (no AI planning)")
