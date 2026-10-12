@@ -138,7 +138,7 @@ export async function runGraph(graph: TestPlanGraph, options: RunnerOptions = {}
         page.setDefaultNavigationTimeout(caseTimeout);
         try {
           for (const action of tc.actions) {
-            await executeAction(page, action);
+            await executeAction(page, action, caseTimeout);
           }
           return { id: tc.id, name: tc.name, status: "passed", durationMs: Date.now() - caseStart };
         } catch (err) {
