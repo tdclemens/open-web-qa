@@ -456,4 +456,66 @@ describe("runGraph", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 60000);
+
+  it("bounds a hanging evaluate with the case timeout instead of running forever", async () => {
+    const report = await runGraph(
+      {
+        cases: [
+          {
+            id: "eval-hang",
+            name: "hanging evaluate",
+            dependsOn: [],
+            timeoutMs: 800,
+            actions: [
+              { type: "goto", url: pageUrl },
+              { type: "evaluate", expression: "new Promise(() => {})" },
+            ],
+          },
+        ],
+      },
+      {
+        headless: true,
+        resultsDir: path.join(resultsDir, "evaluate-hang"),
+      }
+    );
+
+    const hanging = report.results[0]!;
+    expect(hanging.status).toBe("failed");
+    // Accepts either the executor's own bound message ("timed out") or
+    // Playwright's timeout text ("Timeout"); they differ in spacing.
+    expect(hanging.error).toMatch(/timeout|timed out/i);
+    // The 800ms bound fired long before an infinite hang would be visible.
+    expect(hanging.durationMs).toBeLessThan(5000);
+    // The page stays responsive after the evaluate is abandoned: the
+    // failure screenshot was captured.
+    expect(hanging.screenshotPath).toBe(path.join(resultsDir, "evaluate-hang", "eval-hang.png"));
+    expect(fs.existsSync(hanging.screenshotPath!)).toBe(true);
+  }, 60000);
+
+  it("passes a fast evaluate action", async () => {
+    const report = await runGraph(
+      {
+        cases: [
+          {
+            id: "eval-fast",
+            name: "fast evaluate",
+            dependsOn: [],
+            timeoutMs: 800,
+            actions: [
+              { type: "goto", url: pageUrl },
+              { type: "evaluate", expression: "document.title" },
+            ],
+          },
+        ],
+      },
+      {
+        headless: true,
+        resultsDir: path.join(resultsDir, "evaluate-fast"),
+      }
+    );
+
+    const fast = report.results[0]!;
+    expect(fast.status).toBe("passed");
+    expect(fast.error).toBeUndefined();
+  }, 60000);
 });
